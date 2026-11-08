@@ -1,7 +1,7 @@
 /* ==UserScript==
 // @name         Stalker Assistant
 // @namespace    local.stalker-assistant
-// @version      0.3.261108.1217
+// @version      0.3.261108.1308
 // @description  Сбор событий, клавиатур и решений в игре «Сталкер» (VK)
 // @match        https://vk.com/*
 // @match        https://vk.ru/*
@@ -684,10 +684,11 @@
   }
 
   // src/core/events.ts
-  var DEFAULT_EVENT_RULES = { anomaly: "enter", rift: "ask", helicopter: "wait" };
+  var DEFAULT_EVENT_RULES = { anomaly: "enter", rift: "ask", helicopter: "wait", caches: "wait" };
   var ANOMALY_EVENT_ACTIONS = ["enter", "skip", "ask"];
   var RIFT_EVENT_ACTIONS = ["activate", "skip", "ask"];
   var HELICOPTER_EVENT_ACTIONS = ["wait", "skip", "ask"];
+  var CACHE_EVENT_ACTIONS = ["wait", "skip"];
   function isAnomalyEventAction(value) {
     return ANOMALY_EVENT_ACTIONS.includes(value);
   }
@@ -696,6 +697,9 @@
   }
   function isHelicopterEventAction(value) {
     return HELICOPTER_EVENT_ACTIONS.includes(value);
+  }
+  function isCacheEventAction(value) {
+    return CACHE_EVENT_ACTIONS.includes(value);
   }
   var EVENT_RULE_LABELS = {
     anomaly: {
@@ -712,11 +716,18 @@
       title: "\u0412\u0435\u0440\u0442\u043E\u043B\u0451\u0442",
       hint: "\u041E\u0431\u044B\u0441\u043A \u0432\u0435\u0440\u0442\u043E\u043B\u0451\u0442\u0430 \u0438\u0434\u0451\u0442 \u0441\u0430\u043C (~4:40 \u0437\u0430 \u043F\u043E\u0434\u0445\u043E\u0434): \u0436\u0434\u0430\u0442\u044C \u0434\u043E\u0431\u044B\u0447\u0438 \u0438\u043B\u0438 \u043F\u0440\u0435\u0440\u0432\u0430\u0442\u044C \u0438 \u0438\u0434\u0442\u0438 \u0434\u0430\u043B\u044C\u0448\u0435.",
       actions: { wait: "\u0416\u0434\u0430\u0442\u044C", skip: "\u041E\u0431\u0445\u043E\u0434\u0438\u0442\u044C", ask: "\u0421\u043F\u0440\u0430\u0448\u0438\u0432\u0430\u0442\u044C" }
+    },
+    caches: {
+      title: "\u0421\u0445\u0440\u043E\u043D\u044B",
+      hint: "\u041E\u0431\u044B\u0441\u043A \u0441\u0445\u0440\u043E\u043D\u0430 \u0438\u0434\u0451\u0442 \u0441\u0430\u043C (10\u201316 \u043C\u0438\u043D): \u0436\u0434\u0430\u0442\u044C \u0434\u043E\u0431\u044B\u0447\u0438 \u0438\u043B\u0438 \u043F\u0440\u0435\u0440\u0432\u0430\u0442\u044C \u0438 \u0438\u0434\u0442\u0438 \u0434\u0430\u043B\u044C\u0448\u0435.",
+      actions: { wait: "\u0416\u0434\u0430\u0442\u044C", skip: "\u041F\u0440\u043E\u043F\u0443\u0441\u043A\u0430\u0442\u044C" }
     }
   };
   var RIFT_TEXT_RE = /(?:Вы обнаружили Разлом|перед вами Разлом)/u;
   var HELICOPTER_TEXT_RE = /военный вертол[её]т/u;
   var HELICOPTER_DURATION_RE = /каждый по\s*(\d+)\s*мин(?:\s*(\d+)\s*с)?/iu;
+  var CACHE_TEXT_RE = /Обыск займ[её]т/u;
+  var CACHE_DURATION_RE = /Обыск займ[её]т\s*(\d+)\s*мин(?:\s*(\d+)\s*с)?/iu;
   function isRiftText(text) {
     return RIFT_TEXT_RE.test(text);
   }
@@ -730,6 +741,17 @@
     const minutes = Number(match[1] ?? 0);
     const seconds = Number(match[2] ?? 0);
     return (minutes * 60 + seconds) * 1e3 + HELICOPTER_WAIT_SLACK_MS;
+  }
+  function isCacheSearchText(text) {
+    return CACHE_TEXT_RE.test(text) && !isHelicopterText(text);
+  }
+  var CACHE_WAIT_SLACK_MS = 9e4;
+  function cacheSearchMs(text) {
+    const match = CACHE_DURATION_RE.exec(text);
+    if (match === null) return 15 * 6e4 + CACHE_WAIT_SLACK_MS;
+    const minutes = Number(match[1] ?? 0);
+    const seconds = Number(match[2] ?? 0);
+    return (minutes * 60 + seconds) * 1e3 + CACHE_WAIT_SLACK_MS;
   }
 
   // src/core/battle.ts
@@ -1276,6 +1298,30 @@
       ts
     };
   }
+  function cacheAdvice(keyboard, text, ts, events, active) {
+    const action = events?.caches ?? "wait";
+    const searching = flattenButtons(keyboard).some((button) => comparableText(button).includes("\u043F\u0440\u0435\u0440\u0432\u0430\u0442\u044C"));
+    if (!isCacheSearchText(text) && !(active && searching)) return null;
+    if (action === "skip") {
+      const interrupt = flattenButtons(keyboard).find((button) => comparableText(button).includes("\u043F\u0440\u0435\u0440\u0432\u0430\u0442\u044C")) ?? null;
+      if (interrupt === null) return null;
+      return {
+        kind: "cache",
+        title: `\u041D\u0430\u0436\u043C\u0438 \xAB${interrupt.text.trim()}\xBB`,
+        note: "\u0421\u0445\u0440\u043E\u043D: \u043F\u0440\u043E\u043F\u0443\u0441\u043A\u0430\u0435\u043C \u043F\u043E \u043D\u0430\u0441\u0442\u0440\u043E\u0439\u043A\u0435 \u0441\u043E\u0431\u044B\u0442\u0438\u044F.",
+        button: interrupt,
+        ts
+      };
+    }
+    return {
+      kind: "cache",
+      title: "\u0421\u0445\u0440\u043E\u043D: \u0436\u0434\u0451\u043C \u043E\u0431\u044B\u0441\u043A",
+      note: "\u041E\u0431\u044B\u0441\u043A \u0441\u0445\u0440\u043E\u043D\u0430 \u0438\u0434\u0451\u0442 \u0441\u0430\u043C (\u0434\u043E 16 \u043C\u0438\u043D\u0443\u0442) \u2014 \u0430\u0432\u0442\u043E \u043C\u043E\u043B\u0447\u0438\u0442 \u0434\u043E \u0435\u0433\u043E \u0437\u0430\u0432\u0435\u0440\u0448\u0435\u043D\u0438\u044F.",
+      button: null,
+      hold: true,
+      ts
+    };
+  }
   function healthPercentOf(text) {
     const index = text.indexOf("\u0417\u0434\u043E\u0440\u043E\u0432\u044C\u0435");
     if (index < 0) return null;
@@ -1559,6 +1605,10 @@
     if (enabledOf(options, "helicopter")) {
       const helicopter = helicopterAdvice(keyboard, text, ts, options?.events, options?.helicopter);
       if (helicopter) return helicopter;
+    }
+    if (enabledOf(options, "cache")) {
+      const cache = cacheAdvice(keyboard, text, ts, options?.events, options?.caches);
+      if (cache) return cache;
     }
     if (enabledOf(options, "battle") && isBattle(text, keyboard)) {
       if (BATTLE_TEXT_RE.test(text) && !isBattleKeyboard(keyboard) && !isActionsMenuKeyboard(keyboard)) {
@@ -2154,6 +2204,7 @@
     if (isAnomalyEventAction(value.anomaly)) out.anomaly = value.anomaly;
     if (isRiftEventAction(value.rift)) out.rift = value.rift;
     if (isHelicopterEventAction(value.helicopter)) out.helicopter = value.helicopter;
+    if (isCacheEventAction(value.caches)) out.caches = value.caches;
     return out;
   }
   var DELAY_MAX_MS = 6e5;
@@ -3537,6 +3588,8 @@
     anomalyBonusLimitByPeer = /* @__PURE__ */ new Map();
     /** Вертолёт: до этого момента действует окно «обыск идёт» (ждём/не мешаем). */
     helicopterUntilByPeer = /* @__PURE__ */ new Map();
+    /** Схрон: до этого момента действует окно «обыск идёт» (ждём или прерываем). */
+    cacheUntilByPeer = /* @__PURE__ */ new Map();
     /** Состояние боя по каждому чату (враг, HP, концентрация, урон навыков). */
     battleStates = /* @__PURE__ */ new Map();
     /** Заполненность садка по каждому чату («🗑 Садок: N/M» из сообщений улова). */
@@ -3936,6 +3989,7 @@
       this.restPhaseByPeer.clear();
       this.restStartedAtByPeer.clear();
       this.helicopterUntilByPeer.clear();
+      this.cacheUntilByPeer.clear();
       this.battleStates.clear();
       this.battleLivenessMisses.clear();
       this.recoveryByPeer.clear();
@@ -3989,7 +4043,7 @@
      * секция «События»): выбор валидируется по словарю этого события.
      */
     async setEventRule(event, action) {
-      const valid = event === "anomaly" ? isAnomalyEventAction(action) : event === "rift" ? isRiftEventAction(action) : isHelicopterEventAction(action);
+      const valid = event === "anomaly" ? isAnomalyEventAction(action) : event === "rift" ? isRiftEventAction(action) : event === "caches" ? isCacheEventAction(action) : isHelicopterEventAction(action);
       if (!valid) return;
       this.state.eventRules = { ...this.state.eventRules, [event]: action };
       this.logAuto({ event: "event-rule-set", rule: event, action });
@@ -4190,6 +4244,7 @@
       this.restPhaseByPeer.clear();
       this.restStartedAtByPeer.clear();
       this.helicopterUntilByPeer.clear();
+      this.cacheUntilByPeer.clear();
       this.battleStates.clear();
       this.gardenSlotsByPeer.clear();
       this.gardenSellAt = 0;
@@ -4641,7 +4696,7 @@
       } catch {
         return;
       }
-      const local = "0.3.261108.1217";
+      const local = "0.3.261108.1308";
       if (remote === null || !isNewerVersion(remote, local)) return;
       const firstNotice = this.state.updateAvailable?.remote !== remote;
       this.state.updateAvailable = { remote, local };
@@ -4848,6 +4903,9 @@
           if (fresh && message.text && isHelicopterText(message.text)) {
             this.helicopterUntilByPeer.set(message.peerId, message.ts + helicopterApproachMs(message.text));
           }
+          if (fresh && message.text && isCacheSearchText(message.text)) {
+            this.cacheUntilByPeer.set(message.peerId, message.ts + cacheSearchMs(message.text));
+          }
           if (fresh && message.text && isBattleFlowText(message.text)) {
             this.battleStates.set(message.peerId, updateBattleState(this.battleStates.get(message.peerId) ?? null, message.text, message.conversationMessageId));
             this.fishingUntil = 0;
@@ -4952,6 +5010,10 @@
           if (battle && label) {
             this.battleStates.set(decision.peerId, markOutgoingBattleAction(battle, label));
           }
+          if (label !== null && /Прервать/u.test(label)) {
+            this.cacheUntilByPeer.delete(decision.peerId);
+            this.helicopterUntilByPeer.delete(decision.peerId);
+          }
           const anomaly = this.anomalyStates.get(decision.peerId);
           const direction = anomaly !== void 0 && label !== null ? directionFromButtonText(label) : null;
           if (anomaly !== void 0 && direction !== null) {
@@ -5021,6 +5083,7 @@
         recovery,
         events: this.state.eventRules,
         helicopter: Date.now() < (this.helicopterUntilByPeer.get(peerId) ?? 0),
+        caches: Date.now() < (this.cacheUntilByPeer.get(peerId) ?? 0),
         anomalyExit: this.anomalyExitByPeer.has(peerId),
         anomalyTypeRules: this.state.anomalyTypeRules.rules,
         anomalyBonusLimit: this.anomalyBonusLimitByPeer.get(peerId) ?? null,
@@ -6109,7 +6172,7 @@
       };
       if (true) {
         const versionEl = shadow.querySelector(".version");
-        if (versionEl) versionEl.textContent = "0.3.261108.1217";
+        if (versionEl) versionEl.textContent = "0.3.261108.1308";
       }
       this.elements.toggle.addEventListener("click", () => actions.onToggleRecording());
       this.elements.updateReload.addEventListener("click", () => {
@@ -6282,7 +6345,8 @@
       const rows = [
         { event: "anomaly", current: rules.anomaly, actions: ANOMALY_EVENT_ACTIONS },
         { event: "rift", current: rules.rift, actions: RIFT_EVENT_ACTIONS },
-        { event: "helicopter", current: rules.helicopter, actions: HELICOPTER_EVENT_ACTIONS }
+        { event: "helicopter", current: rules.helicopter, actions: HELICOPTER_EVENT_ACTIONS },
+        { event: "caches", current: rules.caches, actions: CACHE_EVENT_ACTIONS }
       ];
       for (const { event, current, actions } of rows) {
         const meta = EVENT_RULE_LABELS[event];
@@ -6911,7 +6975,7 @@
     const start = async () => {
       try {
         if (typeof console !== "undefined" && console.info) {
-          console.info(`[Stalker Assistant] v${"0.3.261108.1217"} started`);
+          console.info(`[Stalker Assistant] v${"0.3.261108.1308"} started`);
         }
         runtime.panel = new Panel({
           onToggleRecording: () => {
