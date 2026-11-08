@@ -1,7 +1,7 @@
 /* ==UserScript==
 // @name         Stalker Assistant
 // @namespace    local.stalker-assistant
-// @version      0.3.261108.0930
+// @version      0.3.261108.1127
 // @description  Сбор событий, клавиатур и решений в игре «Сталкер» (VK)
 // @match        https://vk.com/*
 // @match        https://vk.ru/*
@@ -3363,6 +3363,7 @@
 
   // src/runtime.ts
   var COMPOSER_SYNC_SUPPRESS_MS = 5e3;
+  var SUBMENU_SYNC_SUPPRESS_MS = 1500;
   var KEYBOARD_LIVENESS_INTERVAL_MS = 1e4;
   var ANOMALY_STUCK_SILENCE_MS = 6e4;
   var CAPTCHA_SCAN_INTERVAL_MS = 3e3;
@@ -3535,6 +3536,8 @@
     gardenSellAt = 0;
     manualChoice = null;
     lastAutoClickAt = 0;
+    /** Окно подавления композер-синка после последнего автоклика (короче после «➕ Действия»). */
+    composerSyncSuppressMs = COMPOSER_SYNC_SUPPRESS_MS;
     autoTimer = null;
     plannedAction = null;
     retryCount = 0;
@@ -4534,7 +4537,7 @@
      * развилок применялись не к чему, и бот молчал до ручного клика игрока.
      */
     captureRenderedKeyboard(peerId) {
-      if (Date.now() - this.lastAutoClickAt < COMPOSER_SYNC_SUPPRESS_MS) return false;
+      if (Date.now() - this.lastAutoClickAt < this.composerSyncSuppressMs) return false;
       let rendered = null;
       try {
         rendered = findRenderedKeyboard(this.lastBotCmid.get(peerId) ?? 0);
@@ -4629,7 +4632,7 @@
       } catch {
         return;
       }
-      const local = "0.3.261108.0930";
+      const local = "0.3.261108.1127";
       if (remote === null || !isNewerVersion(remote, local)) return;
       const firstNotice = this.state.updateAvailable?.remote !== remote;
       this.state.updateAvailable = { remote, local };
@@ -5076,7 +5079,7 @@
     handleComposerKeyboard(keyboardRaw, peerId) {
       try {
         if (peerId === null || !this.isGamePeer(peerId)) return;
-        if (Date.now() - this.lastAutoClickAt < COMPOSER_SYNC_SUPPRESS_MS) return;
+        if (Date.now() - this.lastAutoClickAt < this.composerSyncSuppressMs) return;
         const message = normalizeMessage(
           {
             id: -stableNumericId(`${peerId}:${JSON.stringify(keyboardRaw)}`),
@@ -5388,6 +5391,26 @@
               this.reportError(error, "\u043A\u043B\u0438\u043A \u043F\u043E \u043A\u043D\u043E\u043F\u043A\u0435-\u0441\u043F\u0438\u043D\u043D\u0435\u0440\u0443");
             }
           }
+          if (!planned.sendText && this.state.advice?.kind === "battle" && this.retryCount >= 2 && peerId !== null) {
+            const renderedNow = findRenderedKeyboard(this.lastBotCmid.get(peerId) ?? 0);
+            const renderedKb = renderedNow !== null ? normalizeKeyboard(renderedNow.raw) : null;
+            if (renderedKb !== null && isActionsMenuKeyboard(renderedKb) && findButtonByTextMatch(renderedKb, planned.button) === null) {
+              try {
+                if (clickKeyboardButton("\u{1F3AF} \u041A \u0431\u043E\u044E").clicked) {
+                  this.lastAutoClickAt = Date.now();
+                  this.composerSyncSuppressMs = COMPOSER_SYNC_SUPPRESS_MS;
+                  this.autoClickAtByButton.set("\u{1F3AF} \u041A \u0431\u043E\u044E", Date.now());
+                  this.state.autoClicks += 1;
+                  this.logAuto({ event: "submenu-exit", button: planned.button });
+                  this.cancelAutoPlan();
+                  this.evaluateAdvice();
+                  return;
+                }
+              } catch (error) {
+                this.reportError(error, "\u0432\u044B\u0445\u043E\u0434 \u0438\u0437 \u043F\u043E\u0434\u043C\u0435\u043D\u044E \u0431\u043E\u044F");
+              }
+            }
+          }
           if ((hasStuckLoadingButton() || result.found > 0) && Date.now() - this.lastKeyboardReloadAt > KEYBOARD_RELOAD_MIN_INTERVAL_MS) {
             try {
               if (cycleComposerKeyboard()) {
@@ -5454,6 +5477,19 @@
       this.autoClickAtByButton.set(planned.button, Date.now());
       if (planned.sendText === true) this.gardenSellAt = Date.now();
       if (planned.reason === "manual") this.manualChoice = null;
+      if (planned.button.includes("\u0414\u0435\u0439\u0441\u0442\u0432\u0438\u044F")) {
+        this.composerSyncSuppressMs = SUBMENU_SYNC_SUPPRESS_MS;
+        window.setTimeout(() => {
+          const current = this.state.currentPeerId;
+          if (current === null || !this.isGamePeer(current)) return;
+          if (this.captureRenderedKeyboard(current)) {
+            this.evaluateAdvice();
+            if (this.state.mode === "auto") this.scheduleAuto();
+          }
+        }, SUBMENU_SYNC_SUPPRESS_MS + 200);
+      } else {
+        this.composerSyncSuppressMs = COMPOSER_SYNC_SUPPRESS_MS;
+      }
       if (result?.mode === "prefix") {
         this.logAuto({ event: "prefix-click", button: planned.button, matched: result.matchedText ?? "" });
       }
@@ -6063,7 +6099,7 @@
       };
       if (true) {
         const versionEl = shadow.querySelector(".version");
-        if (versionEl) versionEl.textContent = "0.3.261108.0930";
+        if (versionEl) versionEl.textContent = "0.3.261108.1127";
       }
       this.elements.toggle.addEventListener("click", () => actions.onToggleRecording());
       this.elements.updateReload.addEventListener("click", () => {
@@ -6865,7 +6901,7 @@
     const start = async () => {
       try {
         if (typeof console !== "undefined" && console.info) {
-          console.info(`[Stalker Assistant] v${"0.3.261108.0930"} started`);
+          console.info(`[Stalker Assistant] v${"0.3.261108.1127"} started`);
         }
         runtime.panel = new Panel({
           onToggleRecording: () => {
