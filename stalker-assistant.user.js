@@ -1,7 +1,7 @@
 /* ==UserScript==
 // @name         Stalker Assistant
 // @namespace    local.stalker-assistant
-// @version      0.3.261108.1127
+// @version      0.3.261108.1217
 // @description  Сбор событий, клавиатур и решений в игре «Сталкер» (VK)
 // @match        https://vk.com/*
 // @match        https://vk.ru/*
@@ -1499,6 +1499,7 @@
             title: `\u041D\u0430\u0436\u043C\u0438 \xAB${button.text.trim()}\xBB`,
             note: `\u0417\u0430\u0434\u0430\u043D\u0438\u0435 \u043F\u043E \u0446\u0432\u0435\u0442\u0443: \u043D\u0430\u0434\u043F\u0438\u0441\u0438 \u0432\u0440\u0443\u0442, \u0443 \u044D\u0442\u043E\u0439 \u043A\u043D\u043E\u043F\u043A\u0438 \u0446\u0432\u0435\u0442 \xAB${button.color}\xBB.`,
             button,
+            buttonColor: button.color,
             ts
           };
         }
@@ -3034,6 +3035,13 @@
     "button",
     '[role="button"]'
   ].join(", ");
+  function readKeyboardButtonColor(node) {
+    const className = node.getAttribute("class") ?? "";
+    if (className.includes("appearanceNegative")) return "negative";
+    if (className.includes("appearancePositive")) return "positive";
+    if (className.includes("modePrimary")) return "primary";
+    return "secondary";
+  }
   function comparable2(value) {
     return cleanDomText(value.replace(/^Загружается(?:\.\.\.|…)\s*/u, "")).toLowerCase();
   }
@@ -3068,16 +3076,17 @@
     clickTarget.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
     clickTarget.click();
   }
-  function clickKeyboardButton(buttonText) {
+  function clickKeyboardButton(buttonText, color) {
     const target = comparable2(buttonText);
     if (!target) return { clicked: false, found: 0 };
     const buttons = renderedButtons();
     for (const node of buttons) {
       if (comparable2(buttonLabel(node)) !== target) continue;
+      if (color !== null && color !== void 0 && readKeyboardButtonColor(node) !== color) continue;
       clickNode(node);
       return { clicked: true, found: 1, mode: "exact" };
     }
-    const partial = buttons.map((node) => ({ node, label: comparable2(buttonLabel(node)) })).filter(({ label }) => label.length >= 1 && label.length <= 3 && target.startsWith(label));
+    const partial = buttons.map((node) => ({ node, label: comparable2(buttonLabel(node)) })).filter(({ label, node }) => label.length >= 1 && label.length <= 3 && target.startsWith(label) && (color === null || color === void 0 || readKeyboardButtonColor(node) === color));
     if (partial.length === 0) return { clicked: false, found: 0 };
     const firstLabel = partial[0]?.label ?? "";
     if (!partial.every(({ label }) => label === firstLabel)) {
@@ -4632,7 +4641,7 @@
       } catch {
         return;
       }
-      const local = "0.3.261108.1127";
+      const local = "0.3.261108.1217";
       if (remote === null || !isNewerVersion(remote, local)) return;
       const firstNotice = this.state.updateAvailable?.remote !== remote;
       this.state.updateAvailable = { remote, local };
@@ -5307,7 +5316,8 @@
       );
       const at = kept.at;
       if (!kept.reused) this.retryCount = 0;
-      this.plannedAction = { button, reason: action.reason, detached: false, at };
+      const planColor = action.reason === "advice" && this.state.advice?.kind === "color" ? this.state.advice.buttonColor ?? null : null;
+      this.plannedAction = { button, reason: action.reason, detached: false, at, color: planColor };
       this.state.autoPlan = { button, reason: action.reason, at };
       this.autoTimer = window.setTimeout(() => {
         void this.runAutoClick();
@@ -5364,7 +5374,7 @@
           }
           result = { clicked: sent, found: sent ? 1 : 0 };
         } else {
-          result = clickKeyboardButton(planned.button);
+          result = clickKeyboardButton(planned.button, planned.color ?? null);
         }
         if (!result.clicked) {
           const keyboardMessage = peerId !== null ? this.currentForkKeyboard(peerId) : null;
@@ -6099,7 +6109,7 @@
       };
       if (true) {
         const versionEl = shadow.querySelector(".version");
-        if (versionEl) versionEl.textContent = "0.3.261108.1127";
+        if (versionEl) versionEl.textContent = "0.3.261108.1217";
       }
       this.elements.toggle.addEventListener("click", () => actions.onToggleRecording());
       this.elements.updateReload.addEventListener("click", () => {
@@ -6901,7 +6911,7 @@
     const start = async () => {
       try {
         if (typeof console !== "undefined" && console.info) {
-          console.info(`[Stalker Assistant] v${"0.3.261108.1127"} started`);
+          console.info(`[Stalker Assistant] v${"0.3.261108.1217"} started`);
         }
         runtime.panel = new Panel({
           onToggleRecording: () => {
