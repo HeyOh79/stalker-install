@@ -1,7 +1,7 @@
 /* ==UserScript==
 // @name         Stalker Assistant
 // @namespace    local.stalker-assistant
-// @version      0.3.261109.0954
+// @version      0.3.261109.1024
 // @description  Сбор событий, клавиатур и решений в игре «Сталкер» (VK)
 // @match        https://vk.com/*
 // @match        https://vk.ru/*
@@ -2259,6 +2259,19 @@
     return false;
   }
 
+  // src/core/hang.ts
+  var PAGE_RELOAD_AFTER_MS = 5 * 6e4;
+  function pageReloadDecision(input) {
+    if (input.mode !== "auto") return "wait";
+    if (!input.isGameChat || input.hidden) return "wait";
+    if (input.captchaActive || input.manualPaused || input.blindFishing) return "wait";
+    if (input.adviceHold || input.pendingChoice) return "wait";
+    if (input.cacheSearchActive || input.helicopterActive || input.restActive) return "wait";
+    if (input.silentMs <= PAGE_RELOAD_AFTER_MS) return "wait";
+    if (!input.hasScreen) return "wait";
+    return "schedule";
+  }
+
   // src/storage/db.ts
   var DB_NAME = "stalker-assistant";
   var DB_VERSION = 3;
@@ -3464,6 +3477,10 @@
   var PENDING_WRITES_CAP = 3e3;
   var MESSAGE_KEEP_ON_QUOTA = 8e3;
   var RAW_RECOVERY_WATCHDOG_MS = 15e3;
+  var PAGE_RELOAD_GRACE_MS = 3e4;
+  var PAGE_RELOAD_LOOP_WINDOW_MS = 30 * 6e4;
+  var PAGE_RELOAD_LOOP_LIMIT = 3;
+  var PAGE_RELOAD_LOG_KEY = "stalkerPageReloadLog";
   var SEEN_KEYS_CAP = 12e3;
   var USER_ACTIVITY_WINDOW_MS = 4e3;
   var OTHER_TAB_AUTO_WINDOW_MS = 15e3;
@@ -3513,7 +3530,9 @@
       forkRules: [],
       eventRules: { ...DEFAULT_EVENT_RULES },
       anomalyTypeRules: { rules: {}, known: [...DEFAULT_ANOMALY_TYPES] },
-      updateAvailable: null
+      updateAvailable: null,
+      pageReloadScheduledAt: 0,
+      pageReloadSuspendedUntil: 0
     };
     panel = null;
     rawSeq = 0;
@@ -3564,6 +3583,10 @@
     /** Тик проверки обновления (раз в секунду, сама проверка раз в 30 мин). */
     updateCheckTick = 0;
     lastUpdateCheckAt = 0;
+    /** Последняя активность ИГРЫ: свежее сообщение или смена клавиатуры. */
+    lastGameActivityAt = Date.now();
+    /** Причина запланированной перезагрузки (для заметки панели и маркера). */
+    pageReloadSilentMs = 0;
     /** До этого момента авто приостановлен капчей ВК (30 с после последнего ВИДИМОГО следа). */
     captchaActiveUntil = 0;
     /** Когда начался текущий эпизод капчи (страховка от вечного невидимого контейнера). */
@@ -3833,6 +3856,7 @@
       this.evaluateAdvice();
       this.initDone = true;
       await this.drainPendingEvents();
+      this.relogPageReloadMarkers();
       void this.pruneLogs();
     }
     /**
@@ -3900,6 +3924,11 @@
     async setMode(value) {
       this.state.mode = value;
       if (value !== "auto") this.cancelAutoPlan();
+      if (value === "auto") {
+        this.lastGameActivityAt = Date.now();
+        this.evaluateAdvice();
+        this.scheduleAuto();
+      }
       if (value === "observe") {
         this.state.advice = null;
         this.state.battleCandidates = [];
@@ -4527,6 +4556,7 @@
       if (this.captchaActive()) return;
       const peerId = this.state.currentPeerId;
       if (peerId === null || !this.isGamePeer(peerId)) return;
+      this.maybePageReload(peerId);
       if (this.state.autoReset && this.state.mode === "auto" && Date.now() - this.lastProgressAt > STALE_STATE_RESET_MS) {
         this.logAuto({ event: "auto-reset", idleMs: Date.now() - this.lastProgressAt });
         this.resetState();
@@ -4661,6 +4691,7 @@
       if (keyboard.inline) this.lastInlineKeyboard.set(peerId, message);
       else this.lastComposerKeyboard.set(peerId, message);
       this.lastProgressAt = Date.now();
+      this.lastGameActivityAt = Date.now();
       this.clickStreak = null;
       this.logAuto({
         event: "rendered-sync",
@@ -4691,6 +4722,7 @@
         this.state.blindFishing = false;
         this.logAuto({ event: "blind-fishing", state: "recovered" });
       }
+      this.lastGameActivityAt = Date.now();
       this.evaluateAdvice();
       if (this.state.mode === "auto") this.scheduleAuto();
       this.panel?.update(this.state);
@@ -4718,7 +4750,7 @@
       } catch {
         return;
       }
-      const local = "0.3.261109.0954";
+      const local = "0.3.261109.1024";
       if (remote === null || !isNewerVersion(remote, local)) return;
       const firstNotice = this.state.updateAvailable?.remote !== remote;
       this.state.updateAvailable = { remote, local };
@@ -4735,6 +4767,130 @@
     isIdleForReload() {
       const peerId = this.state.currentPeerId;
       return this.plannedAction === null && this.state.pendingChoice === null && this.state.autoPlan === null && Date.now() >= this.fishingUntil && Date.now() >= this.manualTakeoverUntil && (peerId === null || !this.battleStates.has(peerId) && !this.anomalyStates.has(peerId) && this.restPhaseByPeer.get(peerId) === void 0);
+    }
+    /** Решение о перезагрузке для текущего чата (чистая логика — src/core/hang.ts). */
+    pageReloadDecision(peerId) {
+      const now = Date.now();
+      const keyboardMessage = this.currentForkKeyboard(peerId);
+      return pageReloadDecision({
+        mode: this.state.mode,
+        isGameChat: this.state.isGameChat,
+        hidden: document.hidden,
+        captchaActive: this.captchaActive(),
+        manualPaused: this.state.manualPaused || now < this.manualTakeoverUntil,
+        blindFishing: this.state.blindFishing,
+        adviceHold: this.state.advice?.hold === true,
+        pendingChoice: this.state.pendingChoice !== null,
+        cacheSearchActive: now < (this.cacheUntilByPeer.get(peerId) ?? 0),
+        helicopterActive: now < (this.helicopterUntilByPeer.get(peerId) ?? 0),
+        restActive: this.restPhaseByPeer.has(peerId),
+        silentMs: now - this.lastGameActivityAt,
+        hasScreen: keyboardMessage !== null || this.state.advice !== null || this.plannedAction !== null
+      });
+    }
+    cancelPageReload() {
+      if (this.state.pageReloadScheduledAt === 0) return;
+      this.state.pageReloadScheduledAt = 0;
+      this.logAuto({ event: "page-reload-cancel", silentMs: this.pageReloadSilentMs });
+      this.panel?.update(this.state);
+    }
+    /**
+     * Тик детектора зависания (зовётся из проверки живости, раз в ~12 с):
+     * игра молчит дольше PAGE_RELOAD_AFTER_MS при готовом действии —
+     * предупреждаем в панели и через PAGE_RELOAD_GRACE_MS перезагружаем
+     * страницу. Пока идёт отсчёт, любое изменение мира (ответ игры, смена
+     * режима, длинное событие, уход вкладки в фон) отменяет перезагрузку.
+     */
+    maybePageReload(peerId) {
+      const now = Date.now();
+      if (this.state.pageReloadSuspendedUntil > now) {
+        this.cancelPageReload();
+        return;
+      }
+      if (this.state.pageReloadScheduledAt !== 0) {
+        if (this.pageReloadDecision(peerId) !== "schedule") {
+          this.cancelPageReload();
+        } else if (now >= this.state.pageReloadScheduledAt) {
+          void this.executePageReload();
+        }
+        return;
+      }
+      if (this.pageReloadDecision(peerId) !== "schedule") return;
+      this.pageReloadSilentMs = now - this.lastGameActivityAt;
+      this.state.pageReloadScheduledAt = now + PAGE_RELOAD_GRACE_MS;
+      this.logAuto({
+        event: "page-reload-scheduled",
+        silentMs: this.pageReloadSilentMs,
+        graceMs: PAGE_RELOAD_GRACE_MS
+      });
+      this.panel?.update(this.state);
+    }
+    /**
+     * Исполнение перезагрузки: маркер в localStorage (переживает саму
+     * перезагрузку даже при проблемной базе), попытка сброса буфера записей
+     * в базу — и window.location.reload(). После подъёма init переложит
+     * маркер в базу событием `page-reload` (см. relogPageReloadMarkers).
+     */
+    async executePageReload() {
+      const now = Date.now();
+      this.state.pageReloadScheduledAt = 0;
+      try {
+        const log = this.readReloadLog();
+        log.push({ ts: now, silentMs: this.pageReloadSilentMs, reason: "game-silent" });
+        while (log.length > 12) log.shift();
+        localStorage.setItem(PAGE_RELOAD_LOG_KEY, JSON.stringify(log));
+      } catch {
+      }
+      this.logAuto({ event: "page-reload", silentMs: this.pageReloadSilentMs });
+      try {
+        await this.flushWrites();
+      } catch {
+      }
+      window.location.reload();
+    }
+    readReloadLog() {
+      try {
+        const raw = localStorage.getItem(PAGE_RELOAD_LOG_KEY);
+        if (raw === null) return [];
+        const parsed = JSON.parse(raw);
+        if (!Array.isArray(parsed)) return [];
+        return parsed.filter((entry) => typeof entry === "object" && entry !== null && typeof entry.ts === "number");
+      } catch {
+        return [];
+      }
+    }
+    /**
+     * Журнал авто-перезагрузок из localStorage перекладывается в базу событием
+     * `page-reload` (afterReload: true — сама перезагрузка случилась до этого
+     * подъёма). Три и более перезагрузок за 30 минут — защита от цикла:
+     * авто-перезагрузка приостанавливается на 30 минут.
+     */
+    relogPageReloadMarkers() {
+      const log = this.readReloadLog();
+      let changed = false;
+      for (const entry of log) {
+        if (entry.logged) continue;
+        entry.logged = true;
+        changed = true;
+        this.logAuto({
+          event: "page-reload",
+          ts: entry.ts,
+          silentMs: entry.silentMs,
+          reason: entry.reason,
+          afterReload: true
+        });
+      }
+      if (changed) {
+        try {
+          localStorage.setItem(PAGE_RELOAD_LOG_KEY, JSON.stringify(log));
+        } catch {
+        }
+      }
+      const recent = log.filter((entry) => Date.now() - entry.ts < PAGE_RELOAD_LOOP_WINDOW_MS).length;
+      if (recent >= PAGE_RELOAD_LOOP_LIMIT) {
+        this.state.pageReloadSuspendedUntil = Date.now() + PAGE_RELOAD_LOOP_WINDOW_MS;
+        this.logAuto({ event: "page-reload-suspended", recent });
+      }
     }
     /**
      * Зависшие кнопки: в поле аномалии совет с кнопкой (болт/выход) жив, а
@@ -4873,7 +5029,10 @@
             const hpPercent = healthPercentFrom(message.text);
             if (hpPercent !== null) this.lastHpPercent.set(message.peerId, hpPercent);
           }
-          if (fresh && !(message.text && isStaleKeyboardText(message.text))) this.clickStreak = null;
+          if (fresh && !(message.text && isStaleKeyboardText(message.text))) {
+            this.clickStreak = null;
+            this.lastGameActivityAt = Date.now();
+          }
           if (fresh && message.text && isFishingFlowText(message.text)) {
             this.fishingUntil = message.ts + FISHING_WINDOW_MS;
           }
@@ -5192,6 +5351,7 @@
         if (keyboardsEqual(current?.keyboard ?? null, message.keyboard)) return;
         this.lastComposerKeyboard.set(peerId, message);
         this.lastProgressAt = Date.now();
+        this.lastGameActivityAt = Date.now();
         this.clickStreak = null;
         this.logAuto({
           event: "composer-sync",
@@ -5920,6 +6080,12 @@
           color: #a0e0b8; font-size: 11px;
         }
         .blind-note.on { display: block; }
+        .reload-note {
+          display: none; margin-top: 8px; padding: 7px 8px;
+          border: 1px solid #8a6a2e; border-radius: 6px; background: #2a2014;
+          color: #f0d9a0; font-size: 11px; font-weight: 600;
+        }
+        .reload-note.on { display: block; }
         .update-note {
           display: none; margin-top: 8px; padding: 7px 8px;
           border: 1px solid #2e5a8a; border-radius: 6px; background: #141f2a;
@@ -6038,6 +6204,7 @@
         <div class="tab-note"></div>
         <div class="captcha-note"></div>
         <div class="blind-note"></div>
+        <div class="reload-note"></div>
         <div class="update-note">
           <div class="update-text"></div>
           <div class="update-buttons">
@@ -6166,6 +6333,7 @@
         tabNote: get(".tab-note"),
         captchaNote: get(".captcha-note"),
         blindNote: get(".blind-note"),
+        reloadNote: get(".reload-note"),
         updateNote: get(".update-note"),
         updateText: get(".update-text"),
         updateReload: get(".update-reload"),
@@ -6216,7 +6384,7 @@
       };
       if (true) {
         const versionEl = shadow.querySelector(".version");
-        if (versionEl) versionEl.textContent = "0.3.261109.0954";
+        if (versionEl) versionEl.textContent = "0.3.261109.1024";
       }
       this.elements.toggle.addEventListener("click", () => actions.onToggleRecording());
       this.elements.updateReload.addEventListener("click", () => {
@@ -6310,6 +6478,16 @@
       this.elements.blindNote.classList.toggle("on", state.blindFishing);
       if (state.blindFishing) {
         this.elements.blindNote.textContent = "\u{1F441} \u0420\u044B\u0431\u0430\u043B\u043A\u0430 \u043F\u0440\u0438\u043E\u0441\u0442\u0430\u043D\u043E\u0432\u043B\u0435\u043D\u0430: \u0432\u043A\u043B\u0430\u0434\u043A\u0430 \u0432 \u0444\u043E\u043D\u0435, \u0437\u0430\u0434\u0430\u043D\u0438\u044F \u043D\u0435 \u043C\u043E\u043D\u0442\u0438\u0440\u0443\u044E\u0442\u0441\u044F. \u0412\u0435\u0440\u043D\u0438 \u0432\u043A\u043B\u0430\u0434\u043A\u0443 \u043D\u0430 \u043F\u0435\u0440\u0435\u0434\u043D\u0438\u0439 \u043F\u043B\u0430\u043D \u2014 \u0431\u043E\u0442 \u043F\u0440\u043E\u0434\u043E\u043B\u0436\u0438\u0442 \u0441\u0430\u043C.";
+      }
+      const reloadScheduled = state.pageReloadScheduledAt > Date.now();
+      const reloadSuspended = state.pageReloadSuspendedUntil > Date.now();
+      this.elements.reloadNote.classList.toggle("on", reloadScheduled || reloadSuspended);
+      if (reloadScheduled) {
+        const seconds = Math.max(1, Math.ceil((state.pageReloadScheduledAt - Date.now()) / 1e3));
+        this.elements.reloadNote.textContent = `\u23F1 \u0418\u0433\u0440\u0430 \u043D\u0435 \u043E\u0442\u0432\u0435\u0447\u0430\u0435\u0442 \u2014 \u043F\u0435\u0440\u0435\u0437\u0430\u0433\u0440\u0443\u0436\u0443 \u0441\u0442\u0440\u0430\u043D\u0438\u0446\u0443 \u0447\u0435\u0440\u0435\u0437 ${seconds} \u0441. \u0418\u0433\u0440\u0430 \u043E\u0436\u0438\u043B\u0430 \u0438\u043B\u0438 \u043F\u0435\u0440\u0435\u043A\u043B\u044E\u0447\u0438 \u0440\u0435\u0436\u0438\u043C, \u0447\u0442\u043E\u0431\u044B \u043E\u0442\u043C\u0435\u043D\u0438\u0442\u044C.`;
+      } else if (reloadSuspended) {
+        const minutes = Math.ceil((state.pageReloadSuspendedUntil - Date.now()) / 6e4);
+        this.elements.reloadNote.textContent = `\u23F1 \u0421\u0442\u0440\u0430\u043D\u0438\u0446\u0430 \u043F\u0435\u0440\u0435\u0437\u0430\u0433\u0440\u0443\u0436\u0430\u043B\u0430\u0441\u044C \u0441\u043B\u0438\u0448\u043A\u043E\u043C \u0447\u0430\u0441\u0442\u043E \u2014 \u0430\u0432\u0442\u043E-\u043F\u0435\u0440\u0435\u0437\u0430\u0433\u0440\u0443\u0437\u043A\u0430 \u043F\u0440\u0438\u043E\u0441\u0442\u0430\u043D\u043E\u0432\u043B\u0435\u043D\u0430 \u043D\u0430 ${minutes} \u043C\u0438\u043D. \u041F\u0440\u043E\u0432\u0435\u0440\u044C \u0438\u0433\u0440\u0443 \u0432\u0440\u0443\u0447\u043D\u0443\u044E.`;
       }
       const update = state.updateAvailable;
       this.elements.updateNote.classList.toggle("on", update !== null);
@@ -7019,7 +7197,7 @@
     const start = async () => {
       try {
         if (typeof console !== "undefined" && console.info) {
-          console.info(`[Stalker Assistant] v${"0.3.261109.0954"} started`);
+          console.info(`[Stalker Assistant] v${"0.3.261109.1024"} started`);
         }
         runtime.panel = new Panel({
           onToggleRecording: () => {
