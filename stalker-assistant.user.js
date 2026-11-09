@@ -1,7 +1,7 @@
 /* ==UserScript==
 // @name         Stalker Assistant
 // @namespace    local.stalker-assistant
-// @version      0.3.261108.1308
+// @version      0.3.261109.0954
 // @description  Сбор событий, клавиатур и решений в игре «Сталкер» (VK)
 // @match        https://vk.com/*
 // @match        https://vk.ru/*
@@ -3422,6 +3422,23 @@
   }
 
   // src/runtime.ts
+  function slimRawResponse(source, response) {
+    if (source !== "self-poll") return response;
+    const inner = response?.response;
+    const items = Array.isArray(inner?.items) ? inner.items : [];
+    return {
+      response: {
+        count: inner?.count ?? null,
+        items: items.slice(0, 2).map((item) => {
+          if (typeof item !== "object" || item === null) return item;
+          const clone = { ...item };
+          if (typeof clone.text === "string") clone.text = clone.text.slice(0, 200);
+          delete clone.keyboard;
+          return clone;
+        })
+      }
+    };
+  }
   var COMPOSER_SYNC_SUPPRESS_MS = 5e3;
   var SUBMENU_SYNC_SUPPRESS_MS = 1500;
   var KEYBOARD_LIVENESS_INTERVAL_MS = 1e4;
@@ -3445,6 +3462,8 @@
   var RAW_KEEP_ON_QUOTA = 5e3;
   var LOG_AUTO_DEDUPE_MS = 1500;
   var PENDING_WRITES_CAP = 3e3;
+  var MESSAGE_KEEP_ON_QUOTA = 8e3;
+  var RAW_RECOVERY_WATCHDOG_MS = 15e3;
   var SEEN_KEYS_CAP = 12e3;
   var USER_ACTIVITY_WINDOW_MS = 4e3;
   var OTHER_TAB_AUTO_WINDOW_MS = 15e3;
@@ -3537,6 +3556,9 @@
     lastAutoLogAt = 0;
     /** Идёт восстановление raw после ошибки квоты (подрезка+повтор) — один за раз. */
     rawRecoveryInFlight = false;
+    rawRecoveryStartedAt = 0;
+    /** Калбэки потери батчей записей: снимают дедуп-ключи, чтобы доставка повторилась. */
+    pendingDropCallbacks = /* @__PURE__ */ new Map();
     /** Ключи уже обработанных входящих сообщений: дедуп повторных сетевых доставок. */
     seenIncomingKeys = /* @__PURE__ */ new Set();
     /** Тик проверки обновления (раз в секунду, сама проверка раз в 30 мин). */
@@ -4158,7 +4180,7 @@
           method,
           url: sanitizeUrl(context.url),
           peerId,
-          payload: { request: context.request ?? null, response }
+          payload: { request: context.request ?? null, response: slimRawResponse(context.source, response) }
         });
         await this.handleBatch(gameMessages, context.source, {
           history: opts?.history ?? method === "messages.getHistory"
@@ -4696,7 +4718,7 @@
       } catch {
         return;
       }
-      const local = "0.3.261108.1308";
+      const local = "0.3.261109.0954";
       if (remote === null || !isNewerVersion(remote, local)) return;
       const firstNotice = this.state.updateAvailable?.remote !== remote;
       this.state.updateAvailable = { remote, local };
@@ -4772,7 +4794,9 @@
       }
       this.capSeenIncomingKeys();
       if (effective.length) {
-        await this.writeQuiet("messages", effective);
+        await this.writeQuiet("messages", effective, () => {
+          for (const message of effective) this.seenIncomingKeys.delete(message.key);
+        });
         for (const message of effective) {
           this.messageSignatures.add(messageSignature(message));
         }
@@ -5738,7 +5762,7 @@
       await this.writeQuiet("raw", [record]);
     }
     /** Запись в базу без остановки обработки: копится в буфер, пишется пачкой. */
-    writeQuiet(store, items) {
+    writeQuiet(store, items, onDropped) {
       if (items.length === 0) return Promise.resolve();
       const list = this.pendingWrites.get(store) ?? [];
       list.push(...items);
@@ -5747,6 +5771,11 @@
         this.noteStorageError(new Error("pending writes overflow"), store);
       }
       this.pendingWrites.set(store, list);
+      if (onDropped) {
+        const callbacks = this.pendingDropCallbacks.get(store) ?? [];
+        callbacks.push(onDropped);
+        this.pendingDropCallbacks.set(store, callbacks);
+      }
       if (this.writeTimer === null) {
         this.writeTimer = window.setTimeout(() => {
           this.writeTimer = null;
@@ -5764,14 +5793,17 @@
       if (this.pendingWrites.size === 0) return;
       const batch = this.pendingWrites;
       this.pendingWrites = /* @__PURE__ */ new Map();
+      const batchCallbacks = this.pendingDropCallbacks;
+      this.pendingDropCallbacks = /* @__PURE__ */ new Map();
       await Promise.all([...batch.entries()].map(
         ([store, items]) => putMany(store, items).catch(async (error) => {
           if (store === "raw") {
-            if (this.rawRecoveryInFlight) {
+            if (this.rawRecoveryInFlight && Date.now() - this.rawRecoveryStartedAt < RAW_RECOVERY_WATCHDOG_MS) {
               this.noteStorageError(error, "raw");
               return;
             }
             this.rawRecoveryInFlight = true;
+            this.rawRecoveryStartedAt = Date.now();
             try {
               await pruneStore("raw", RAW_KEEP_ON_QUOTA);
               await putMany("raw", items);
@@ -5782,7 +5814,19 @@
             }
             return;
           }
-          this.noteStorageError(error, store);
+          if (store === "messages") {
+            try {
+              await pruneStore("messages", MESSAGE_KEEP_ON_QUOTA);
+              await putMany("messages", items);
+              return;
+            } catch (retryError) {
+              this.noteStorageError(retryError, "messages");
+            }
+          } else {
+            this.noteStorageError(error, store);
+          }
+          const callbacks = batchCallbacks.get(store) ?? [];
+          for (const callback of callbacks) callback();
         })
       ));
     }
@@ -6172,7 +6216,7 @@
       };
       if (true) {
         const versionEl = shadow.querySelector(".version");
-        if (versionEl) versionEl.textContent = "0.3.261108.1308";
+        if (versionEl) versionEl.textContent = "0.3.261109.0954";
       }
       this.elements.toggle.addEventListener("click", () => actions.onToggleRecording());
       this.elements.updateReload.addEventListener("click", () => {
@@ -6975,7 +7019,7 @@
     const start = async () => {
       try {
         if (typeof console !== "undefined" && console.info) {
-          console.info(`[Stalker Assistant] v${"0.3.261108.1308"} started`);
+          console.info(`[Stalker Assistant] v${"0.3.261109.0954"} started`);
         }
         runtime.panel = new Panel({
           onToggleRecording: () => {
