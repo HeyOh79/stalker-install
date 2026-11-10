@@ -1,7 +1,7 @@
 /* ==UserScript==
 // @name         Stalker Assistant
 // @namespace    local.stalker-assistant
-// @version      0.3.261109.1024
+// @version      0.3.261110.1233
 // @description  Сбор событий, клавиатур и решений в игре «Сталкер» (VK)
 // @match        https://vk.com/*
 // @match        https://vk.ru/*
@@ -3576,6 +3576,17 @@
     /** Идёт восстановление raw после ошибки квоты (подрезка+повтор) — один за раз. */
     rawRecoveryInFlight = false;
     rawRecoveryStartedAt = 0;
+    /**
+     * Адаптивный предел подрезки при квоте: подрезка «до 5000» при сторе ровно
+     * 5000 записей не удаляет НИЧЕГО (excess = 0) — байты остаются сверх квоты,
+     * каждая запись продолжает падать (сессия 09-10.11: raw замер на ровно
+     * 5000, входящие тексты перестали писаться). При повторных неудачах предел
+     * уменьшается вдвое (до минимума), при успехе — возвращается к дефолту.
+     */
+    rawQuotaKeep = RAW_KEEP_ON_QUOTA;
+    messageQuotaKeep = MESSAGE_KEEP_ON_QUOTA;
+    /** Троттлинг лога write-failed: раз в 30 с на стор. */
+    lastWriteFailLogAt = /* @__PURE__ */ new Map();
     /** Калбэки потери батчей записей: снимают дедуп-ключи, чтобы доставка повторилась. */
     pendingDropCallbacks = /* @__PURE__ */ new Map();
     /** Ключи уже обработанных входящих сообщений: дедуп повторных сетевых доставок. */
@@ -4750,7 +4761,7 @@
       } catch {
         return;
       }
-      const local = "0.3.261109.1024";
+      const local = "0.3.261110.1233";
       if (remote === null || !isNewerVersion(remote, local)) return;
       const firstNotice = this.state.updateAvailable?.remote !== remote;
       this.state.updateAvailable = { remote, local };
@@ -5029,7 +5040,7 @@
             const hpPercent = healthPercentFrom(message.text);
             if (hpPercent !== null) this.lastHpPercent.set(message.peerId, hpPercent);
           }
-          if (fresh && !(message.text && isStaleKeyboardText(message.text))) {
+          if (fresh && !message.out && !(message.text && isStaleKeyboardText(message.text))) {
             this.clickStreak = null;
             this.lastGameActivityAt = Date.now();
           }
@@ -5959,16 +5970,18 @@
         ([store, items]) => putMany(store, items).catch(async (error) => {
           if (store === "raw") {
             if (this.rawRecoveryInFlight && Date.now() - this.rawRecoveryStartedAt < RAW_RECOVERY_WATCHDOG_MS) {
-              this.noteStorageError(error, "raw");
+              this.noteWriteFailure(error, store);
               return;
             }
             this.rawRecoveryInFlight = true;
             this.rawRecoveryStartedAt = Date.now();
             try {
-              await pruneStore("raw", RAW_KEEP_ON_QUOTA);
+              await pruneStore("raw", this.rawQuotaKeep);
               await putMany("raw", items);
+              this.rawQuotaKeep = RAW_KEEP_ON_QUOTA;
             } catch (retryError) {
-              this.noteStorageError(retryError, "raw");
+              this.rawQuotaKeep = Math.max(1e3, Math.floor(this.rawQuotaKeep / 2));
+              this.noteWriteFailure(retryError, "raw");
             } finally {
               this.rawRecoveryInFlight = false;
             }
@@ -5976,19 +5989,33 @@
           }
           if (store === "messages") {
             try {
-              await pruneStore("messages", MESSAGE_KEEP_ON_QUOTA);
+              await pruneStore("messages", this.messageQuotaKeep);
               await putMany("messages", items);
+              this.messageQuotaKeep = MESSAGE_KEEP_ON_QUOTA;
               return;
             } catch (retryError) {
-              this.noteStorageError(retryError, "messages");
+              this.messageQuotaKeep = Math.max(1e3, Math.floor(this.messageQuotaKeep / 2));
+              this.noteWriteFailure(retryError, store);
             }
           } else {
-            this.noteStorageError(error, store);
+            this.noteWriteFailure(error, store);
           }
           const callbacks = batchCallbacks.get(store) ?? [];
           for (const callback of callbacks) callback();
         })
       ));
+    }
+    /** Ошибка записи: в панель (троттлинг) и в лог с текстом ошибки — по экспорту видно, что именно падает. */
+    noteWriteFailure(error, store) {
+      this.noteStorageError(error, store);
+      const last = this.lastWriteFailLogAt.get(store) ?? 0;
+      if (Date.now() - last < 3e4) return;
+      this.lastWriteFailLogAt.set(store, Date.now());
+      this.logAuto({
+        event: "write-failed",
+        store,
+        message: error instanceof Error ? `${error.name}: ${error.message}` : String(error)
+      });
     }
     /**
      * Счётчики панели пересчитываются не чаще раза в COUNT_REFRESH_MS и только
@@ -6384,7 +6411,7 @@
       };
       if (true) {
         const versionEl = shadow.querySelector(".version");
-        if (versionEl) versionEl.textContent = "0.3.261109.1024";
+        if (versionEl) versionEl.textContent = "0.3.261110.1233";
       }
       this.elements.toggle.addEventListener("click", () => actions.onToggleRecording());
       this.elements.updateReload.addEventListener("click", () => {
@@ -7197,7 +7224,7 @@
     const start = async () => {
       try {
         if (typeof console !== "undefined" && console.info) {
-          console.info(`[Stalker Assistant] v${"0.3.261109.1024"} started`);
+          console.info(`[Stalker Assistant] v${"0.3.261110.1233"} started`);
         }
         runtime.panel = new Panel({
           onToggleRecording: () => {
