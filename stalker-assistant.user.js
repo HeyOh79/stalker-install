@@ -1,7 +1,7 @@
 /* ==UserScript==
 // @name         Stalker Assistant
 // @namespace    local.stalker-assistant
-// @version      0.3.261111.0259
+// @version      0.3.261111.1238
 // @description  Сбор событий, клавиатур и решений в игре «Сталкер» (VK)
 // @match        https://vk.com/*
 // @match        https://vk.ru/*
@@ -447,14 +447,23 @@
   }
 
   // src/core/anomaly.ts
-  var SIGNAL_RE = /Сила сигнала:\s*(\d+)/u;
+  var SIGNAL_RE = /(?:Сила сигнала|Сигнал):\s*(\d+)/u;
+  var SIGNAL_SILENCE_RE = /Сигнал:\s*тишина/u;
+  var SIGNAL_EMPTY_RE = /Сигнал:\s*пусто/u;
+  var TREND_UP_RE = /крепнет\s*\(\+/u;
+  var TREND_DOWN_RE = /слабеет\s*\(\s*[−-]/u;
   var SCOUTED_RE = /Разведано направлений:\s*(\d+)\s*\/\s*(\d+)/u;
+  var SCOUTED_NEW_RE = /разведано\s+(\d+)\s+из\s+(\d+)/iu;
   var BOLTS_RE = /У вас\s+(\d+)\s+болт/u;
   var NO_BOLTS_RE = /Болтов нет/u;
   var CAME_FROM_RE = /пришли с\s+(Севера|Юга|Запада|Востока)/iu;
+  var BOLT_FAIL_RE = /новых проходов нет/u;
+  var BOLT_OK_RE = /найден(?:ы)?\s+проход/u;
+  var BOUNCE_RE = /выставил вас туда, откуда пришли/u;
+  var ARTIFACTS_LEFT_RE = /Осталось в аномалии:\s*(\d+)/u;
   var ANOMALY_MAX_SIGNAL = 100;
   var ARTIFACT_HERE_RE = /Детектор трещит:\s*АРТЕФАКТ прямо здесь/u;
-  var ARTIFACT_PICKED_RE = /Подобран артефакт/u;
+  var ARTIFACT_PICKED_RE = /Подобран\s+(?:обузданный\s+|проклятый\s+)?артефакт/u;
   var ANOMALY_ENTERED_RE = /Перед глазами аномалия/u;
   var ANOMALY_LEFT_RE = /Вы вышли из аномалии|Зона запомнит ваши следы/u;
   var ANOMALY_DEATH_RE = /вы погибли/u;
@@ -493,27 +502,46 @@
     const next = {
       signal: state?.signal ?? null,
       prevSignal: state?.prevSignal ?? null,
+      trend: state?.trend ?? null,
+      silence: state?.silence ?? false,
+      fieldEmpty: state?.fieldEmpty ?? false,
+      artifactsLeft: state?.artifactsLeft ?? null,
       lastMove: state?.lastMove ?? null,
       cameFrom: state?.cameFrom ?? null,
       scouted: state?.scouted ?? null,
       total: state?.total ?? null,
       bolts: state?.bolts ?? null,
+      boltFails: state?.boltFails ?? 0,
       path: state?.path ?? [],
       pendingMove: state?.pendingMove ?? null,
       returned: state?.returned ?? false,
       lastCmid: Math.max(state?.lastCmid ?? 0, cmid ?? 0)
     };
     const signal = SIGNAL_RE.exec(text);
+    const trendSeen = TREND_UP_RE.test(text) || TREND_DOWN_RE.test(text);
     if (signal) {
       const value = Number(signal[1]);
       if (next.signal !== null && next.signal !== value) next.prevSignal = next.signal;
       next.signal = value;
+      next.silence = false;
+      if (!trendSeen && CAME_FROM_RE.test(text)) next.trend = null;
     }
-    const scouted = SCOUTED_RE.exec(text);
+    if (SIGNAL_SILENCE_RE.test(text)) {
+      next.silence = true;
+      next.trend = null;
+    }
+    if (SIGNAL_EMPTY_RE.test(text)) next.fieldEmpty = true;
+    if (BOUNCE_RE.test(text)) {
+      next.pendingMove = null;
+      return next;
+    }
+    if (TREND_UP_RE.test(text)) next.trend = "up";
+    if (TREND_DOWN_RE.test(text)) next.trend = "down";
+    const scouted = SCOUTED_RE.exec(text) ?? SCOUTED_NEW_RE.exec(text);
     if (scouted) {
       next.scouted = Number(scouted[1]);
       next.total = Number(scouted[2]);
-      if (next.scouted === 0) {
+      if (next.scouted === 0 && SCOUTED_RE.test(text)) {
         next.prevSignal = null;
         next.lastMove = null;
         next.cameFrom = null;
@@ -525,10 +553,19 @@
     const bolts = BOLTS_RE.exec(text);
     if (bolts) next.bolts = Number(bolts[1]);
     if (NO_BOLTS_RE.test(text)) next.bolts = 0;
+    if (BOLT_OK_RE.test(text)) next.boltFails = 0;
+    if (BOLT_FAIL_RE.test(text)) next.boltFails += 1;
+    const left = ARTIFACTS_LEFT_RE.exec(text);
+    if (left) next.artifactsLeft = Number(left[1]);
     if (ARTIFACT_PICKED_RE.test(text)) {
       next.path = [];
       next.signal = null;
       next.prevSignal = null;
+      next.trend = null;
+      next.silence = false;
+      next.boltFails = 0;
+      next.scouted = null;
+      next.total = null;
       next.lastMove = null;
       next.cameFrom = null;
       next.pendingMove = null;
@@ -562,6 +599,7 @@
     if (top === null) {
       state.path = [{ entryFrom: OPPOSITE[move], signal: state.signal ?? 0, tried: [], exitTo: null }];
       state.returned = false;
+      state.boltFails = 0;
       return;
     }
     if (move === top.entryFrom && state.path.length >= 2) {
@@ -574,12 +612,14 @@
         if (state.signal !== null) parent.signal = state.signal;
       }
       state.returned = true;
+      state.boltFails = 0;
       return;
     }
     top.exitTo = move;
     state.path.push({ entryFrom: OPPOSITE[move], signal: state.signal ?? 0, tried: [], exitTo: null });
     if (state.path.length > PATH_LIMIT) state.path.shift();
     state.returned = false;
+    state.boltFails = 0;
   }
   function markAnomalyMove(state, direction) {
     return { ...state, pendingMove: direction };
@@ -592,42 +632,60 @@
     const texts = flattenButtons(keyboard).map((button) => comparableButtonText2(button.text));
     return DIRECTIONS.filter((direction) => texts.some((text) => text.includes(direction)));
   }
+  function visitedDirections(keyboard) {
+    const visited = /* @__PURE__ */ new Set();
+    for (const button of flattenButtons(keyboard)) {
+      if (!button.text.includes("\u{1F463}")) continue;
+      const direction = directionFromButtonText(button.text);
+      if (direction !== null) visited.add(direction);
+    }
+    return visited;
+  }
   function anomalyNextMove(state, keyboard) {
     const texts = flattenButtons(keyboard).map((button) => comparableButtonText2(button.text));
     const has = (needle) => texts.some((text) => text.includes(needle));
     const canBolt = has("\u0431\u0440\u043E\u0441\u0438\u0442\u044C \u0431\u043E\u043B\u0442");
     const canExit = has("\u0432\u044B\u0439\u0442\u0438 \u0438\u0437 \u0430\u043D\u043E\u043C\u0430\u043B\u0438\u0438");
     if (!canBolt && !canExit) return null;
+    if (state?.fieldEmpty) return canExit ? { kind: "exit" } : null;
+    if (has("\u043F\u0440\u043E\u0434\u043E\u043B\u0436\u0438\u0442\u044C \u043F\u043E\u0438\u0441\u043A")) return null;
     if ((state?.signal ?? 0) >= ANOMALY_MAX_SIGNAL) return null;
+    if (has("\u043E\u0431\u044B\u0441\u043A\u0430\u0442\u044C")) return { kind: "search" };
     const room = state !== null ? state.path[state.path.length - 1] ?? null : null;
     const parent = state !== null && state.path.length >= 2 ? state.path[state.path.length - 2] ?? null : null;
     const worseThanParent = state !== null && room !== null && parent !== null && state.signal !== null && state.signal < parent.signal;
     const directions = directionButtons(keyboard);
+    const visited = visitedDirections(keyboard);
     const entryFrom = room?.entryFrom ?? state?.cameFrom ?? null;
     const tried = room?.tried ?? [];
-    const knowForward = directions.some((direction) => direction !== entryFrom && !tried.includes(direction));
-    const needScout = !knowForward && (state === null || state.scouted === null || state.total === null || state.scouted < state.total);
+    if (state !== null && (state.trend === "down" || state.silence)) {
+      const back = room?.entryFrom ?? state.cameFrom;
+      if (back !== null && directions.includes(back)) return { kind: "move", direction: back, why: "back" };
+    }
+    const partial = state === null || state.scouted === null || state.total === null || state.scouted < state.total;
     const knowBolts = state?.bolts !== null && state?.bolts !== void 0;
-    if (canBolt && needScout && !worseThanParent && (!knowBolts || (state?.bolts ?? 0) > 0)) {
+    if (canBolt && partial && !worseThanParent && (state?.boltFails ?? 0) < 2 && (!knowBolts || (state?.bolts ?? 0) > 0)) {
       return { kind: "bolt" };
     }
     if (directions.length === 0) return canExit ? { kind: "exit" } : null;
-    if (worseThanParent && room !== null && state !== null) {
+    if (state?.trend === null && worseThanParent && room !== null && state !== null) {
       const back = room.entryFrom !== null && directions.includes(room.entryFrom) ? room.entryFrom : state.cameFrom;
       if (back !== null && directions.includes(back)) return { kind: "move", direction: back, why: "back" };
       return canExit ? { kind: "exit" } : null;
     }
-    if (room === null && state !== null && state.signal !== null && state.prevSignal !== null && state.signal < state.prevSignal && state.cameFrom !== null && directions.includes(state.cameFrom)) {
+    if (room === null && state !== null && state.trend === null && state.signal !== null && state.prevSignal !== null && state.signal < state.prevSignal && state.cameFrom !== null && directions.includes(state.cameFrom)) {
       return { kind: "move", direction: state.cameFrom, why: "back" };
     }
     const candidates = directions.filter((direction) => direction !== entryFrom && !tried.includes(direction));
+    const fresh = candidates.filter((direction) => !visited.has(direction));
+    const pool = fresh.length > 0 ? fresh : candidates;
     let target = null;
     let why = "new";
     if (state !== null && !state.returned && state.lastMove !== null && candidates.includes(state.lastMove)) {
       target = state.lastMove;
       why = "course";
-    } else if (candidates.length > 0) {
-      target = candidates[0] ?? null;
+    } else if (pool.length > 0) {
+      target = pool[0] ?? null;
     }
     if (target === null) {
       if (entryFrom !== null && directions.includes(entryFrom)) {
@@ -662,12 +720,15 @@
         lastBoundary = boundary;
         continue;
       }
-      if (/Сила сигнала|Разведано направлений/u.test(entry.text)) {
+      if (isAnomalyFieldText(entry.text)) {
         state = updateAnomalyState(state, entry.text, entry.cmid ?? null);
       }
     }
     if (state === null || lastBoundary === "picked" || lastBoundary === "left") return null;
     return state;
+  }
+  function isAnomalyFieldText(text) {
+    return /Сигнал:|Сила сигнала|[Рр]азведано|пришли с\s+(Севера|Юга|Запада|Востока)|на краю аномалии/u.test(text);
   }
   var ENTRY_TYPE_RE = /Перед глазами аномалия:\s*([^\n]+)/iu;
   var BONUS_LIMIT_RE = /Доп\. лимит\s*\((\d+)\)/iu;
@@ -1125,7 +1186,7 @@
         ts
       };
     }
-    if (inField && state?.signal === 0) {
+    if (inField && (state?.fieldEmpty === true || state?.signal === 0)) {
       const exitButton = byText("\u0432\u044B\u0439\u0442\u0438 \u0438\u0437 \u0430\u043D\u043E\u043C\u0430\u043B\u0438\u0438");
       if (exitButton !== null) {
         return {
@@ -1190,7 +1251,16 @@
           ts
         };
       }
-      if (action === "ask") return null;
+      if (action === "ask") {
+        return {
+          kind: "anomaly",
+          title: "\u0410\u043D\u043E\u043C\u0430\u043B\u0438\u044F: \u0442\u0432\u043E\u0451 \u0440\u0435\u0448\u0435\u043D\u0438\u0435",
+          note: "\u041D\u0430\u0441\u0442\u0440\u043E\u0439\u043A\u0430 \u0441\u043E\u0431\u044B\u0442\u0438\u044F \xAB\u0421\u043F\u0440\u0430\u0448\u0438\u0432\u0430\u0442\u044C\xBB: \u0430\u0432\u0442\u043E \u043D\u0435 \u0436\u043C\u0451\u0442 \u2014 \u0437\u0430\u0445\u043E\u0434\u0438 \u0438\u043B\u0438 \u0443\u0445\u043E\u0434\u0438 \u0441\u0430\u043C.",
+          button: null,
+          hold: true,
+          ts
+        };
+      }
       return {
         kind: "anomaly",
         title: `\u041D\u0430\u0436\u043C\u0438 \xAB${enter.text.trim()}\xBB`,
@@ -1198,6 +1268,19 @@
         button: enter,
         ts
       };
+    }
+    const circleStep = byText("\u0448\u0430\u0433\u043D\u0443\u0442\u044C \u0432 \u043A\u0440\u0443\u0433");
+    if (circleStep !== null) {
+      const bypass = byText("\u043E\u0431\u043E\u0439\u0442\u0438");
+      if (bypass !== null) {
+        return {
+          kind: "anomaly",
+          title: `\u041D\u0430\u0436\u043C\u0438 \xAB${bypass.text.trim()}\xBB`,
+          note: "\u0410\u043D\u043E\u043C\u0430\u043B\u0438\u044F: \xAB\u041E\u0431\u043E\u0439\u0442\u0438\xBB \u0431\u0435\u0437\u043E\u043F\u0430\u0441\u043D\u0435\u0435 \u2014 \u0441\u0440\u0435\u0437\u043A\u0430 \u0447\u0435\u0440\u0435\u0437 \u043A\u0440\u0443\u0433 \u0431\u044C\u0451\u0442.",
+          button: bypass,
+          ts
+        };
+      }
     }
     if (!canExit) {
       const knockDown = byText("\u0441\u0431\u0438\u0442\u044C \u0431\u043E\u043B\u0442\u043E\u043C");
@@ -1213,13 +1296,24 @@
     if (!inField) return null;
     const move = anomalyNextMove(state, keyboard);
     if (move === null) return null;
+    if (move.kind === "search") {
+      const search = byText("\u043E\u0431\u044B\u0441\u043A\u0430\u0442\u044C");
+      if (search === null) return null;
+      return {
+        kind: "anomaly",
+        title: `\u041D\u0430\u0436\u043C\u0438 \xAB${search.text.trim()}\xBB`,
+        note: "\u041F\u043E\u043B\u0435 \u0430\u043D\u043E\u043C\u0430\u043B\u0438\u0438: \u043E\u0431\u044B\u0441\u043A \u2014 \u0431\u0435\u0441\u043F\u043B\u0430\u0442\u043D\u044B\u0435 \u0431\u043E\u043B\u0442\u044B \u0438 \u043D\u0430\u0439\u0434\u0435\u043D\u043D\u043E\u0435.",
+        button: search,
+        ts
+      };
+    }
     if (move.kind === "bolt") {
       const bolt = byText("\u0431\u0440\u043E\u0441\u0438\u0442\u044C \u0431\u043E\u043B\u0442");
       if (bolt === null) return null;
       return {
         kind: "anomaly",
         title: `\u041D\u0430\u0436\u043C\u0438 \xAB${bolt.text.trim()}\xBB`,
-        note: "\u041F\u043E\u043B\u0435 \u0430\u043D\u043E\u043C\u0430\u043B\u0438\u0438: \u0440\u0430\u0437\u0432\u0435\u0434\u0430\u0435\u043C \u043F\u0440\u043E\u0445\u043E\u0434\u044B \u0431\u043E\u043B\u0442\u043E\u043C.",
+        note: "\u041F\u043E\u043B\u0435 \u0430\u043D\u043E\u043C\u0430\u043B\u0438\u0438: \u043E\u0434\u0438\u043D \u0431\u043E\u043B\u0442 \u043E\u0442\u043A\u0440\u044B\u0432\u0430\u0435\u0442 \u0432\u0441\u0435 \u043D\u0430\u043F\u0440\u0430\u0432\u043B\u0435\u043D\u0438\u044F \u043A\u043B\u0435\u0442\u043A\u0438.",
         button: bolt,
         ts
       };
@@ -1230,14 +1324,14 @@
       return {
         kind: "anomaly",
         title: `\u041D\u0430\u0436\u043C\u0438 \xAB${exitButton.text.trim()}\xBB`,
-        note: "\u041F\u043E\u043B\u0435 \u0430\u043D\u043E\u043C\u0430\u043B\u0438\u0438: \u0438\u0434\u0442\u0438 \u043D\u0435\u043A\u0443\u0434\u0430 \u2014 \u0432\u044B\u0445\u043E\u0434\u0438\u043C.",
+        note: state?.fieldEmpty ? "\u0410\u0440\u0442\u0435\u0444\u0430\u043A\u0442\u043E\u0432 \u0432 \u043F\u043E\u043B\u0435 \u0431\u043E\u043B\u044C\u0448\u0435 \u043D\u0435\u0442 \u2014 \u0432\u044B\u0445\u043E\u0434\u0438\u043C." : "\u041F\u043E\u043B\u0435 \u0430\u043D\u043E\u043C\u0430\u043B\u0438\u0438: \u0438\u0434\u0442\u0438 \u043D\u0435\u043A\u0443\u0434\u0430 \u2014 \u0432\u044B\u0445\u043E\u0434\u0438\u043C.",
         button: exitButton,
         ts
       };
     }
     const target = buttons.find((button) => comparableText(button).includes(move.direction)) ?? null;
     if (target === null) return null;
-    const whyNote = move.why === "back" ? "\u0441\u0438\u0433\u043D\u0430\u043B \u0443\u043F\u0430\u043B \u2014 \u0432\u043E\u0437\u0432\u0440\u0430\u0449\u0430\u0435\u043C\u0441\u044F \u043A \u0440\u0430\u0437\u0432\u0438\u043B\u043A\u0435" : move.why === "retreat" ? "\u043D\u0430\u043F\u0440\u0430\u0432\u043B\u0435\u043D\u0438\u044F \u0437\u0434\u0435\u0441\u044C \u0438\u0441\u0447\u0435\u0440\u043F\u0430\u043D\u044B \u2014 \u043E\u0442\u0441\u0442\u0443\u043F\u0430\u0435\u043C \u043A \u043F\u0440\u0435\u0434\u044B\u0434\u0443\u0449\u0435\u0439 \u0440\u0430\u0437\u0432\u0438\u043B\u043A\u0435" : move.why === "new" ? "\u043F\u0440\u043E\u0431\u0443\u0435\u043C \u043D\u043E\u0432\u043E\u0435 \u043D\u0430\u043F\u0440\u0430\u0432\u043B\u0435\u043D\u0438\u0435" : state?.prevSignal !== null && state?.prevSignal !== void 0 && state.signal !== null && state.signal !== void 0 && state.signal > state.prevSignal ? "\u0441\u0438\u0433\u043D\u0430\u043B \u0440\u0430\u0441\u0442\u0451\u0442 \u2014 \u0434\u0435\u0440\u0436\u0438\u043C \u043A\u0443\u0440\u0441" : "\u0438\u0434\u0451\u043C \u043F\u043E \u043F\u0435\u0440\u0432\u043E\u043C\u0443 \u0434\u043E\u0441\u0442\u0443\u043F\u043D\u043E\u043C\u0443";
+    const whyNote = move.why === "back" ? state?.silence ? "\u0434\u0435\u0442\u0435\u043A\u0442\u043E\u0440 \u043C\u043E\u043B\u0447\u0438\u0442 \u2014 \u0432\u0435\u0442\u043A\u0430 \u043D\u0435 \u0442\u0430, \u0432\u043E\u0437\u0432\u0440\u0430\u0449\u0430\u0435\u043C\u0441\u044F" : "\u0441\u0438\u0433\u043D\u0430\u043B \u0441\u043B\u0430\u0431\u0435\u0435\u0442 \u2014 \u0432\u043E\u0437\u0432\u0440\u0430\u0449\u0430\u0435\u043C\u0441\u044F \u043A \u0440\u0430\u0437\u0432\u0438\u043B\u043A\u0435" : move.why === "retreat" ? "\u043D\u0430\u043F\u0440\u0430\u0432\u043B\u0435\u043D\u0438\u044F \u0437\u0434\u0435\u0441\u044C \u0438\u0441\u0447\u0435\u0440\u043F\u0430\u043D\u044B \u2014 \u043E\u0442\u0441\u0442\u0443\u043F\u0430\u0435\u043C \u043A \u043F\u0440\u0435\u0434\u044B\u0434\u0443\u0449\u0435\u0439 \u0440\u0430\u0437\u0432\u0438\u043B\u043A\u0435" : move.why === "course" ? state?.trend === "up" ? "\u0441\u0438\u0433\u043D\u0430\u043B \u043A\u0440\u0435\u043F\u043D\u0435\u0442 \u2014 \u0434\u0435\u0440\u0436\u0438\u043C \u043A\u0443\u0440\u0441" : "\u0441\u0438\u0433\u043D\u0430\u043B \u0440\u0430\u0441\u0442\u0451\u0442 \u2014 \u0434\u0435\u0440\u0436\u0438\u043C \u043A\u0443\u0440\u0441" : "\u043F\u0440\u043E\u0431\u0443\u0435\u043C \u043D\u043E\u0432\u043E\u0435 \u043D\u0430\u043F\u0440\u0430\u0432\u043B\u0435\u043D\u0438\u0435";
     return {
       kind: "anomaly",
       title: `\u041D\u0430\u0436\u043C\u0438 \xAB${target.text.trim()}\xBB`,
@@ -1252,7 +1346,16 @@
     const activate = byText("\u0430\u043A\u0442\u0438\u0432\u0438\u0440\u043E\u0432\u0430\u0442\u044C \u0440\u0430\u0437\u043B\u043E\u043C");
     if (activate === null && !isRiftText(text)) return null;
     const action = events?.rift ?? "ask";
-    if (action === "ask") return null;
+    if (action === "ask") {
+      return {
+        kind: "rift",
+        title: "\u0420\u0430\u0437\u043B\u043E\u043C: \u0442\u0432\u043E\u0451 \u0440\u0435\u0448\u0435\u043D\u0438\u0435",
+        note: "\u041D\u0430\u0441\u0442\u0440\u043E\u0439\u043A\u0430 \u0441\u043E\u0431\u044B\u0442\u0438\u044F \xAB\u0421\u043F\u0440\u0430\u0448\u0438\u0432\u0430\u0442\u044C\xBB: \u0430\u0432\u0442\u043E \u043D\u0435 \u0436\u043C\u0451\u0442 \u2014 \u0430\u043A\u0442\u0438\u0432\u0438\u0440\u0443\u0439 \u0438\u043B\u0438 \u0443\u0439\u0434\u0438 \u0441\u0430\u043C.",
+        button: null,
+        hold: true,
+        ts
+      };
+    }
     if (action === "activate") {
       if (activate === null) return null;
       return {
@@ -4768,7 +4871,7 @@
       } catch {
         return;
       }
-      const local = "0.3.261111.0259";
+      const local = "0.3.261111.1238";
       if (remote === null || !isNewerVersion(remote, local)) return;
       const firstNotice = this.state.updateAvailable?.remote !== remote;
       this.state.updateAvailable = { remote, local };
@@ -5073,7 +5176,7 @@
               this.lastInlineKeyboard.delete(message.peerId);
             }
           }
-          if (fresh && message.text && /Сила сигнала|Разведано направлений/u.test(message.text)) {
+          if (fresh && message.text && isAnomalyFieldText(message.text)) {
             this.anomalyStates.set(message.peerId, updateAnomalyState(this.anomalyStates.get(message.peerId) ?? null, message.text, message.conversationMessageId));
             if (this.state.anomalyHpGuard) {
               const hp = healthPercentFrom(message.text);
@@ -6465,7 +6568,7 @@
       };
       if (true) {
         const versionEl = shadow.querySelector(".version");
-        if (versionEl) versionEl.textContent = "0.3.261111.0259";
+        if (versionEl) versionEl.textContent = "0.3.261111.1238";
       }
       this.elements.toggle.addEventListener("click", () => actions.onToggleRecording());
       this.elements.updateReload.addEventListener("click", () => {
@@ -7278,7 +7381,7 @@
     const start = async () => {
       try {
         if (typeof console !== "undefined" && console.info) {
-          console.info(`[Stalker Assistant] v${"0.3.261111.0259"} started`);
+          console.info(`[Stalker Assistant] v${"0.3.261111.1238"} started`);
         }
         runtime.panel = new Panel({
           onToggleRecording: () => {
