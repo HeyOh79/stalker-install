@@ -1,7 +1,7 @@
 /* ==UserScript==
 // @name         Stalker Assistant
 // @namespace    local.stalker-assistant
-// @version      0.3.261111.1405
+// @version      0.3.261111.1436
 // @description  Сбор событий, клавиатур и решений в игре «Сталкер» (VK)
 // @match        https://vk.com/*
 // @match        https://vk.ru/*
@@ -462,6 +462,7 @@
   };
   var DIRECTIONS = ["\u0441\u0435\u0432\u0435\u0440", "\u044E\u0433", "\u0437\u0430\u043F\u0430\u0434", "\u0432\u043E\u0441\u0442\u043E\u043A"];
   var cellKey = (x, y) => `${x},${y}`;
+  var RECENT_MOVES_CAP = 6;
   var SIGNAL_RE = /(?:Сила сигнала|Сигнал):\s*(\d+)/u;
   var SIGNAL_SILENCE_RE = /Сигнал:\s*тишина/u;
   var SIGNAL_EMPTY_RE = /Сигнал:\s*пусто/u;
@@ -527,6 +528,7 @@
       y: state?.y ?? 0,
       cells: state?.cells ?? {},
       pendingMove: state?.pendingMove ?? null,
+      recentMoves: state?.recentMoves ?? [],
       lastCmid: Math.max(state?.lastCmid ?? 0, cmid ?? 0)
     };
     if (DEAF_RE.test(text)) next.deaf = true;
@@ -538,16 +540,20 @@
     const came = !BOUNCE_RE.test(text) ? CAME_FROM_RE.exec(text) : null;
     const from = came ? CAME_FROM_MAP[(came[1] ?? "").toLowerCase()] ?? null : null;
     const move = from !== null && next.pendingMove !== null && from === OPPOSITE[next.pendingMove] ? next.pendingMove : null;
-    if (move !== null) {
+    const implicit = move === null && !BOUNCE_RE.test(text) && from === null && next.pendingMove !== null && SIGNAL_RE.test(text);
+    const effectiveMove = move ?? (implicit ? next.pendingMove : null);
+    if (effectiveMove !== null) {
       const fromCell = next.cells[cellKey(next.x, next.y)] ?? emptyCell();
-      fromCell.revealed[move] = true;
-      fromCell.passes[move] = next.trend === "up" || next.trend === "down" ? next.trend : "unknown";
-      const [dx, dy] = DELTA[move];
+      fromCell.revealed[effectiveMove] = true;
+      fromCell.passes[effectiveMove] = next.trend === "up" || next.trend === "down" ? next.trend : "unknown";
+      const [dx, dy] = DELTA[effectiveMove];
       next.x += dx;
       next.y += dy;
-      next.lastMove = move;
+      next.lastMove = effectiveMove;
+      next.cameFrom = OPPOSITE[effectiveMove];
       next.pendingMove = null;
       next.boltFails = 0;
+      next.recentMoves = [...next.recentMoves, effectiveMove].slice(-RECENT_MOVES_CAP);
     }
     if (from !== null) next.cameFrom = from;
     const key = cellKey(next.x, next.y);
@@ -681,18 +687,28 @@
     }
     const untried = directions.filter((direction) => (cell.passes[direction] ?? "untried") === "untried");
     if (untried.length > 0) {
+      const visitedFromButtons = /* @__PURE__ */ new Set();
+      for (const button of flattenButtons(keyboard)) {
+        if (!button.text.includes("\u{1F463}")) continue;
+        const direction = directionFromButtonText(button.text);
+        if (direction !== null) visitedFromButtons.add(direction);
+      }
       const targetVisited = (direction) => {
+        if (visitedFromButtons.has(direction)) return true;
         if (state === null) return false;
         const [dx, dy] = DELTA[direction];
         return state.cells[cellKey(state.x + dx, state.y + dy)] !== void 0;
       };
+      const moves = state?.recentMoves ?? [];
+      const oscillating = moves.length >= 2 && moves[moves.length - 1] !== void 0 && moves[moves.length - 2] !== void 0 && moves[moves.length - 2] === OPPOSITE[moves[moves.length - 1]] ? OPPOSITE[moves[moves.length - 1]] : null;
       let target = null;
-      if (state?.trend === "up" && state.lastMove !== null && untried.includes(state.lastMove)) {
+      if (state?.trend === "up" && state.lastMove !== null && untried.includes(state.lastMove) && state.lastMove !== oscillating) {
         target = state.lastMove;
       }
       if (target === null) {
         const fresh = untried.filter((direction) => !targetVisited(direction));
-        const pool = fresh.length > 0 ? fresh : untried;
+        const calm = (fresh.length > 0 ? fresh : untried).filter((direction) => direction !== oscillating);
+        const pool = calm.length > 0 ? calm : fresh.length > 0 ? fresh : untried;
         target = pool[0] ?? null;
       }
       if (target !== null) {
@@ -4890,7 +4906,7 @@
       } catch {
         return;
       }
-      const local = "0.3.261111.1405";
+      const local = "0.3.261111.1436";
       if (remote === null || !isNewerVersion(remote, local)) return;
       const firstNotice = this.state.updateAvailable?.remote !== remote;
       this.state.updateAvailable = { remote, local };
@@ -6587,7 +6603,7 @@
       };
       if (true) {
         const versionEl = shadow.querySelector(".version");
-        if (versionEl) versionEl.textContent = "0.3.261111.1405";
+        if (versionEl) versionEl.textContent = "0.3.261111.1436";
       }
       this.elements.toggle.addEventListener("click", () => actions.onToggleRecording());
       this.elements.updateReload.addEventListener("click", () => {
@@ -7400,7 +7416,7 @@
     const start = async () => {
       try {
         if (typeof console !== "undefined" && console.info) {
-          console.info(`[Stalker Assistant] v${"0.3.261111.1405"} started`);
+          console.info(`[Stalker Assistant] v${"0.3.261111.1436"} started`);
         }
         runtime.panel = new Panel({
           onToggleRecording: () => {
