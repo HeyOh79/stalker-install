@@ -1,7 +1,7 @@
 /* ==UserScript==
 // @name         Stalker Assistant
 // @namespace    local.stalker-assistant
-// @version      0.3.261111.1403
+// @version      0.3.261111.1405
 // @description  Сбор событий, клавиатур и решений в игре «Сталкер» (VK)
 // @match        https://vk.com/*
 // @match        https://vk.ru/*
@@ -4890,7 +4890,7 @@
       } catch {
         return;
       }
-      const local = "0.3.261111.1403";
+      const local = "0.3.261111.1405";
       if (remote === null || !isNewerVersion(remote, local)) return;
       const firstNotice = this.state.updateAvailable?.remote !== remote;
       this.state.updateAvailable = { remote, local };
@@ -6587,7 +6587,7 @@
       };
       if (true) {
         const versionEl = shadow.querySelector(".version");
-        if (versionEl) versionEl.textContent = "0.3.261111.1403";
+        if (versionEl) versionEl.textContent = "0.3.261111.1405";
       }
       this.elements.toggle.addEventListener("click", () => actions.onToggleRecording());
       this.elements.updateReload.addEventListener("click", () => {
@@ -7400,7 +7400,7 @@
     const start = async () => {
       try {
         if (typeof console !== "undefined" && console.info) {
-          console.info(`[Stalker Assistant] v${"0.3.261111.1403"} started`);
+          console.info(`[Stalker Assistant] v${"0.3.261111.1405"} started`);
         }
         runtime.panel = new Panel({
           onToggleRecording: () => {
