@@ -1,7 +1,7 @@
 /* ==UserScript==
 // @name         Stalker Assistant
 // @namespace    local.stalker-assistant
-// @version      0.3.261111.1523
+// @version      0.3.261111.2333
 // @description  Сбор событий, клавиатур и решений в игре «Сталкер» (VK)
 // @match        https://vk.com/*
 // @match        https://vk.ru/*
@@ -306,6 +306,7 @@
         };
       }
     }
+    if (context.fishingWaiting) return null;
     const rule = findForkRule(context.forkRules ?? [], forkSignature(keyboard));
     if (rule?.choice) {
       const target = comparable(rule.choice);
@@ -1165,7 +1166,7 @@
     const buttons = flattenButtons(keyboard);
     const byText = (needle) => buttons.find((button) => comparableText(button).includes(needle)) ?? null;
     const leave = byText("\u043F\u043E\u043A\u0438\u043D\u0443\u0442\u044C");
-    if (leave !== null && isLeaveConfirmText(text)) {
+    if (leave !== null && isLeaveConfirmText(text) && (state !== null || exitWish)) {
       return {
         kind: "anomaly",
         title: `\u041D\u0430\u0436\u043C\u0438 \xAB${leave.text.trim()}\xBB`,
@@ -2305,6 +2306,9 @@
   }
   function isFishingFlowText(text) {
     return /Наживк|Садок|садке|Поплавок/u.test(text);
+  }
+  function isFishingWaitingText(text) {
+    return /Наживки осталось:/u.test(text);
   }
   function isFishLostText(text) {
     return /Сорвалась|замешкал/u.test(text);
@@ -4647,6 +4651,7 @@
         else if (!hasFire) next = null;
       } else if (phase === "rest") {
         if (hp !== null && hp >= REST_COMPLETE_PERCENT && hasZone) next = "return";
+        else if (!hasRestButton && !hasZone) next = null;
       } else if (phase === "return") {
         if (hasFire) next = null;
         else if (!hasZone) next = null;
@@ -4966,7 +4971,7 @@
       } catch {
         return;
       }
-      const local = "0.3.261111.1523";
+      const local = "0.3.261111.2333";
       if (remote === null || !isNewerVersion(remote, local)) return;
       const firstNotice = this.state.updateAvailable?.remote !== remote;
       this.state.updateAvailable = { remote, local };
@@ -5607,11 +5612,13 @@
       if (!keyboard || this.manualChoice) return;
       if (this.state.advice) return;
       if (!isForkKeyboard(keyboard)) return;
+      if (isFishingWaitingText(this.lastBotText.get(peerId) ?? "")) return;
       const action = nextAutoAction(keyboard, {
         advice: this.state.advice,
         delays: this.state.autoDelays,
         manualChoice: null,
-        forkRules: this.state.forkRules
+        forkRules: this.state.forkRules,
+        fishingWaiting: false
       });
       if (action) return;
       const buttons = keyboard.buttons.flat().filter((button) => !isContinueButton(button)).map((button) => trimLoadingPrefix(button.text)).filter((text) => text.length > 0);
@@ -5701,11 +5708,13 @@
         }
       }
       const keyboard = this.currentForkKeyboard(peerId)?.keyboard ?? null;
+      const fishingWaiting = isFishingWaitingText(this.lastBotText.get(peerId) ?? "");
       const action = nextAutoAction(keyboard, {
         advice: this.state.advice,
         delays: this.state.autoDelays,
         manualChoice: this.manualChoice,
-        forkRules: this.state.forkRules
+        forkRules: this.state.forkRules,
+        fishingWaiting
       });
       if (!action) {
         if (this.state.advice?.kind === "battle" && this.state.advice.button === null) {
@@ -6682,7 +6691,7 @@
       };
       if (true) {
         const versionEl = shadow.querySelector(".version");
-        if (versionEl) versionEl.textContent = "0.3.261111.1523";
+        if (versionEl) versionEl.textContent = "0.3.261111.2333";
       }
       this.elements.toggle.addEventListener("click", () => actions.onToggleRecording());
       this.elements.updateReload.addEventListener("click", () => {
@@ -7501,7 +7510,7 @@
     const start = async () => {
       try {
         if (typeof console !== "undefined" && console.info) {
-          console.info(`[Stalker Assistant] v${"0.3.261111.1523"} started`);
+          console.info(`[Stalker Assistant] v${"0.3.261111.2333"} started`);
         }
         runtime.panel = new Panel({
           onToggleRecording: () => {
