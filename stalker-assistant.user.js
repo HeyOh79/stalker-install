@@ -1,7 +1,7 @@
 /* ==UserScript==
 // @name         Stalker Assistant
 // @namespace    local.stalker-assistant
-// @version      0.3.261111.1238
+// @version      0.3.261111.1403
 // @description  Сбор событий, клавиатур и решений в игре «Сталкер» (VK)
 // @match        https://vk.com/*
 // @match        https://vk.ru/*
@@ -447,6 +447,21 @@
   }
 
   // src/core/anomaly.ts
+  var emptyCell = () => ({ signal: null, scouted: null, total: null, revealed: {}, passes: {} });
+  var DELTA = {
+    \u0441\u0435\u0432\u0435\u0440: [0, -1],
+    \u044E\u0433: [0, 1],
+    \u0437\u0430\u043F\u0430\u0434: [-1, 0],
+    \u0432\u043E\u0441\u0442\u043E\u043A: [1, 0]
+  };
+  var OPPOSITE = {
+    \u0441\u0435\u0432\u0435\u0440: "\u044E\u0433",
+    \u044E\u0433: "\u0441\u0435\u0432\u0435\u0440",
+    \u0437\u0430\u043F\u0430\u0434: "\u0432\u043E\u0441\u0442\u043E\u043A",
+    \u0432\u043E\u0441\u0442\u043E\u043A: "\u0437\u0430\u043F\u0430\u0434"
+  };
+  var DIRECTIONS = ["\u0441\u0435\u0432\u0435\u0440", "\u044E\u0433", "\u0437\u0430\u043F\u0430\u0434", "\u0432\u043E\u0441\u0442\u043E\u043A"];
+  var cellKey = (x, y) => `${x},${y}`;
   var SIGNAL_RE = /(?:Сила сигнала|Сигнал):\s*(\d+)/u;
   var SIGNAL_SILENCE_RE = /Сигнал:\s*тишина/u;
   var SIGNAL_EMPTY_RE = /Сигнал:\s*пусто/u;
@@ -461,6 +476,14 @@
   var BOLT_OK_RE = /найден(?:ы)?\s+проход/u;
   var BOUNCE_RE = /выставил вас туда, откуда пришли/u;
   var ARTIFACTS_LEFT_RE = /Осталось в аномалии:\s*(\d+)/u;
+  var DEAF_RE = /стрелку водит|Детектор хрипит|аномалия «глухая»/iu;
+  var FLAVOR_PASS_RE = /^(Север|Юг|Запад|Восток)\s+—/u;
+  var CAME_FROM_MAP = {
+    \u0441\u0435\u0432\u0435\u0440\u0430: "\u0441\u0435\u0432\u0435\u0440",
+    \u044E\u0433\u0430: "\u044E\u0433",
+    \u0437\u0430\u043F\u0430\u0434\u0430: "\u0437\u0430\u043F\u0430\u0434",
+    \u0432\u043E\u0441\u0442\u043E\u043A\u0430: "\u0432\u043E\u0441\u0442\u043E\u043A"
+  };
   var ANOMALY_MAX_SIGNAL = 100;
   var ARTIFACT_HERE_RE = /Детектор трещит:\s*АРТЕФАКТ прямо здесь/u;
   var ARTIFACT_PICKED_RE = /Подобран\s+(?:обузданный\s+|проклятый\s+)?артефакт/u;
@@ -484,142 +507,99 @@
     if (ANOMALY_LEFT_RE.test(text)) return "left";
     return null;
   }
-  var CAME_FROM_MAP = {
-    \u0441\u0435\u0432\u0435\u0440\u0430: "\u0441\u0435\u0432\u0435\u0440",
-    \u044E\u0433\u0430: "\u044E\u0433",
-    \u0437\u0430\u043F\u0430\u0434\u0430: "\u0437\u0430\u043F\u0430\u0434",
-    \u0432\u043E\u0441\u0442\u043E\u043A\u0430: "\u0432\u043E\u0441\u0442\u043E\u043A"
-  };
-  var OPPOSITE = {
-    \u0441\u0435\u0432\u0435\u0440: "\u044E\u0433",
-    \u044E\u0433: "\u0441\u0435\u0432\u0435\u0440",
-    \u0437\u0430\u043F\u0430\u0434: "\u0432\u043E\u0441\u0442\u043E\u043A",
-    \u0432\u043E\u0441\u0442\u043E\u043A: "\u0437\u0430\u043F\u0430\u0434"
-  };
-  var DIRECTIONS = ["\u0441\u0435\u0432\u0435\u0440", "\u044E\u0433", "\u0437\u0430\u043F\u0430\u0434", "\u0432\u043E\u0441\u0442\u043E\u043A"];
+  function isAnomalyFieldText(text) {
+    return /Сигнал:|Сила сигнала|[Рр]азведано|пришли с\s+(Севера|Юга|Запада|Востока)|на краю аномалии/u.test(text);
+  }
   function updateAnomalyState(state, text, cmid = null) {
     if (state !== null && cmid !== null && cmid < state.lastCmid) return state;
     const next = {
       signal: state?.signal ?? null,
-      prevSignal: state?.prevSignal ?? null,
       trend: state?.trend ?? null,
       silence: state?.silence ?? false,
       fieldEmpty: state?.fieldEmpty ?? false,
+      deaf: state?.deaf ?? false,
       artifactsLeft: state?.artifactsLeft ?? null,
       lastMove: state?.lastMove ?? null,
       cameFrom: state?.cameFrom ?? null,
-      scouted: state?.scouted ?? null,
-      total: state?.total ?? null,
       bolts: state?.bolts ?? null,
       boltFails: state?.boltFails ?? 0,
-      path: state?.path ?? [],
+      x: state?.x ?? 0,
+      y: state?.y ?? 0,
+      cells: state?.cells ?? {},
       pendingMove: state?.pendingMove ?? null,
-      returned: state?.returned ?? false,
       lastCmid: Math.max(state?.lastCmid ?? 0, cmid ?? 0)
     };
-    const signal = SIGNAL_RE.exec(text);
-    const trendSeen = TREND_UP_RE.test(text) || TREND_DOWN_RE.test(text);
-    if (signal) {
-      const value = Number(signal[1]);
-      if (next.signal !== null && next.signal !== value) next.prevSignal = next.signal;
-      next.signal = value;
-      next.silence = false;
-      if (!trendSeen && CAME_FROM_RE.test(text)) next.trend = null;
-    }
-    if (SIGNAL_SILENCE_RE.test(text)) {
-      next.silence = true;
-      next.trend = null;
-    }
-    if (SIGNAL_EMPTY_RE.test(text)) next.fieldEmpty = true;
+    if (DEAF_RE.test(text)) next.deaf = true;
+    next.trend = TREND_UP_RE.test(text) ? "up" : TREND_DOWN_RE.test(text) ? "down" : null;
     if (BOUNCE_RE.test(text)) {
       next.pendingMove = null;
-      return next;
+      next.trend = null;
     }
-    if (TREND_UP_RE.test(text)) next.trend = "up";
-    if (TREND_DOWN_RE.test(text)) next.trend = "down";
+    const came = !BOUNCE_RE.test(text) ? CAME_FROM_RE.exec(text) : null;
+    const from = came ? CAME_FROM_MAP[(came[1] ?? "").toLowerCase()] ?? null : null;
+    const move = from !== null && next.pendingMove !== null && from === OPPOSITE[next.pendingMove] ? next.pendingMove : null;
+    if (move !== null) {
+      const fromCell = next.cells[cellKey(next.x, next.y)] ?? emptyCell();
+      fromCell.revealed[move] = true;
+      fromCell.passes[move] = next.trend === "up" || next.trend === "down" ? next.trend : "unknown";
+      const [dx, dy] = DELTA[move];
+      next.x += dx;
+      next.y += dy;
+      next.lastMove = move;
+      next.pendingMove = null;
+      next.boltFails = 0;
+    }
+    if (from !== null) next.cameFrom = from;
+    const key = cellKey(next.x, next.y);
+    const cell = next.cells[key] ?? emptyCell();
+    next.cells[key] = cell;
+    const signal = SIGNAL_RE.exec(text);
+    if (signal) {
+      cell.signal = Number(signal[1]);
+      next.signal = cell.signal;
+      next.silence = false;
+    }
+    if (SIGNAL_SILENCE_RE.test(text)) next.silence = true;
+    if (SIGNAL_EMPTY_RE.test(text)) next.fieldEmpty = true;
     const scouted = SCOUTED_RE.exec(text) ?? SCOUTED_NEW_RE.exec(text);
     if (scouted) {
-      next.scouted = Number(scouted[1]);
-      next.total = Number(scouted[2]);
-      if (next.scouted === 0 && SCOUTED_RE.test(text)) {
-        next.prevSignal = null;
-        next.lastMove = null;
-        next.cameFrom = null;
-        next.path = [];
-        next.pendingMove = null;
-        next.returned = false;
-      }
+      cell.scouted = Number(scouted[1]);
+      cell.total = Number(scouted[2]);
     }
     const bolts = BOLTS_RE.exec(text);
     if (bolts) next.bolts = Number(bolts[1]);
     if (NO_BOLTS_RE.test(text)) next.bolts = 0;
     if (BOLT_OK_RE.test(text)) next.boltFails = 0;
     if (BOLT_FAIL_RE.test(text)) next.boltFails += 1;
+    if (BOLT_OK_RE.test(text)) {
+      const m = /найден(?:ы)?\s+проход(?:ы)?\s+на\s+([^.\n]+)/iu.exec(text);
+      if (m) {
+        for (const direction of DIRECTIONS) {
+          if ((m[1] ?? "").includes(direction)) cell.revealed[direction] = true;
+        }
+      }
+    }
+    for (const line of text.split("\n")) {
+      const flavor = FLAVOR_PASS_RE.exec(line.trim());
+      if (flavor) {
+        const direction = (flavor[1] ?? "").toLowerCase();
+        if (DIRECTIONS.includes(direction)) cell.revealed[direction] = true;
+      }
+    }
     const left = ARTIFACTS_LEFT_RE.exec(text);
     if (left) next.artifactsLeft = Number(left[1]);
     if (ARTIFACT_PICKED_RE.test(text)) {
-      next.path = [];
       next.signal = null;
-      next.prevSignal = null;
       next.trend = null;
       next.silence = false;
-      next.boltFails = 0;
-      next.scouted = null;
-      next.total = null;
-      next.lastMove = null;
-      next.cameFrom = null;
-      next.pendingMove = null;
-      next.returned = false;
-    }
-    if (next.signal !== null && next.prevSignal !== null && next.prevSignal - next.signal > 25) {
-      next.path = [];
-      next.lastMove = null;
-      next.cameFrom = null;
-      next.pendingMove = null;
-      next.returned = false;
-      next.prevSignal = null;
-    }
-    const came = CAME_FROM_RE.exec(text);
-    if (came) {
-      const from = CAME_FROM_MAP[(came[1] ?? "").toLowerCase()];
-      if (from) {
-        if (next.pendingMove !== null && from === OPPOSITE[next.pendingMove]) {
-          applyArrival(next, next.pendingMove);
-          next.pendingMove = null;
+      for (const record of Object.values(next.cells)) {
+        for (const direction of DIRECTIONS) {
+          const outcome = record.passes[direction];
+          if (outcome === "up" || outcome === "down") record.passes[direction] = "untried";
         }
-        next.cameFrom = from;
-        next.lastMove = OPPOSITE[from];
       }
     }
     return next;
-  }
-  var PATH_LIMIT = 60;
-  function applyArrival(state, move) {
-    const top = state.path[state.path.length - 1] ?? null;
-    if (top === null) {
-      state.path = [{ entryFrom: OPPOSITE[move], signal: state.signal ?? 0, tried: [], exitTo: null }];
-      state.returned = false;
-      state.boltFails = 0;
-      return;
-    }
-    if (move === top.entryFrom && state.path.length >= 2) {
-      state.path.pop();
-      const parent = state.path[state.path.length - 1];
-      if (parent !== void 0) {
-        const branch = parent.exitTo ?? OPPOSITE[top.entryFrom ?? move];
-        if (branch !== null && !parent.tried.includes(branch)) parent.tried.push(branch);
-        parent.exitTo = null;
-        if (state.signal !== null) parent.signal = state.signal;
-      }
-      state.returned = true;
-      state.boltFails = 0;
-      return;
-    }
-    top.exitTo = move;
-    state.path.push({ entryFrom: OPPOSITE[move], signal: state.signal ?? 0, tried: [], exitTo: null });
-    if (state.path.length > PATH_LIMIT) state.path.shift();
-    state.returned = false;
-    state.boltFails = 0;
   }
   function markAnomalyMove(state, direction) {
     return { ...state, pendingMove: direction };
@@ -632,14 +612,51 @@
     const texts = flattenButtons(keyboard).map((button) => comparableButtonText2(button.text));
     return DIRECTIONS.filter((direction) => texts.some((text) => text.includes(direction)));
   }
-  function visitedDirections(keyboard) {
-    const visited = /* @__PURE__ */ new Set();
-    for (const button of flattenButtons(keyboard)) {
-      if (!button.text.includes("\u{1F463}")) continue;
-      const direction = directionFromButtonText(button.text);
-      if (direction !== null) visited.add(direction);
+  function frontierCells(state) {
+    const out = [];
+    for (const [key, cell] of Object.entries(state.cells)) {
+      const unscouted = cell.scouted !== null && cell.total !== null && cell.scouted < cell.total;
+      const untried = DIRECTIONS.some((direction) => cell.revealed[direction] && (cell.passes[direction] ?? "untried") === "untried");
+      if (unscouted || untried) {
+        const coords = key.split(",");
+        const x = Number(coords[0]);
+        const y = Number(coords[1]);
+        if (Number.isFinite(x) && Number.isFinite(y)) out.push({ x, y });
+      }
     }
-    return visited;
+    return out;
+  }
+  function stepToNearestFrontier(state) {
+    const start = cellKey(state.x, state.y);
+    const targets = frontierCells(state).filter((cell) => cellKey(cell.x, cell.y) !== start);
+    if (targets.length === 0) return null;
+    const targetKeys = new Set(targets.map((cell) => cellKey(cell.x, cell.y)));
+    const visited = /* @__PURE__ */ new Set([start]);
+    let queue = [[start, "\u0441\u0435\u0432\u0435\u0440"]];
+    while (queue.length > 0) {
+      const nextQueue = [];
+      for (const [key, firstStep] of queue) {
+        const coords = key.split(",");
+        const cx = Number(coords[0]);
+        const cy = Number(coords[1]);
+        const cell = state.cells[key];
+        if (!Number.isFinite(cx) || !Number.isFinite(cy) || cell === void 0) continue;
+        for (const direction of DIRECTIONS) {
+          if (!cell.revealed[direction]) continue;
+          const [dx, dy] = DELTA[direction];
+          const nKey = cellKey(cx + dx, cy + dy);
+          if (visited.has(nKey)) continue;
+          const neighbor = state.cells[nKey];
+          if (neighbor === void 0) continue;
+          const step = key === start ? direction : firstStep;
+          if (targetKeys.has(nKey)) return step;
+          visited.add(nKey);
+          nextQueue.push([nKey, step]);
+        }
+      }
+      queue = nextQueue;
+    }
+    return null;
   }
   function anomalyNextMove(state, keyboard) {
     const texts = flattenButtons(keyboard).map((button) => comparableButtonText2(button.text));
@@ -649,51 +666,56 @@
     if (!canBolt && !canExit) return null;
     if (state?.fieldEmpty) return canExit ? { kind: "exit" } : null;
     if (has("\u043F\u0440\u043E\u0434\u043E\u043B\u0436\u0438\u0442\u044C \u043F\u043E\u0438\u0441\u043A")) return null;
-    if ((state?.signal ?? 0) >= ANOMALY_MAX_SIGNAL) return null;
+    if (!state?.deaf && (state?.signal ?? 0) >= ANOMALY_MAX_SIGNAL) return null;
     if (has("\u043E\u0431\u044B\u0441\u043A\u0430\u0442\u044C")) return { kind: "search" };
-    const room = state !== null ? state.path[state.path.length - 1] ?? null : null;
-    const parent = state !== null && state.path.length >= 2 ? state.path[state.path.length - 2] ?? null : null;
-    const worseThanParent = state !== null && room !== null && parent !== null && state.signal !== null && state.signal < parent.signal;
     const directions = directionButtons(keyboard);
-    const visited = visitedDirections(keyboard);
-    const entryFrom = room?.entryFrom ?? state?.cameFrom ?? null;
-    const tried = room?.tried ?? [];
+    const cell = state !== null ? state.cells[cellKey(state.x, state.y)] ?? emptyCell() : emptyCell();
     if (state !== null && (state.trend === "down" || state.silence)) {
-      const back = room?.entryFrom ?? state.cameFrom;
+      const back = state.cameFrom;
       if (back !== null && directions.includes(back)) return { kind: "move", direction: back, why: "back" };
     }
-    const partial = state === null || state.scouted === null || state.total === null || state.scouted < state.total;
+    const partial = state === null || cell.scouted === null || cell.total === null || cell.scouted < cell.total;
     const knowBolts = state?.bolts !== null && state?.bolts !== void 0;
-    if (canBolt && partial && !worseThanParent && (state?.boltFails ?? 0) < 2 && (!knowBolts || (state?.bolts ?? 0) > 0)) {
+    if (canBolt && partial && (state?.boltFails ?? 0) < 2 && (!knowBolts || (state?.bolts ?? 0) > 0)) {
       return { kind: "bolt" };
     }
-    if (directions.length === 0) return canExit ? { kind: "exit" } : null;
-    if (state?.trend === null && worseThanParent && room !== null && state !== null) {
-      const back = room.entryFrom !== null && directions.includes(room.entryFrom) ? room.entryFrom : state.cameFrom;
-      if (back !== null && directions.includes(back)) return { kind: "move", direction: back, why: "back" };
-      return canExit ? { kind: "exit" } : null;
-    }
-    if (room === null && state !== null && state.trend === null && state.signal !== null && state.prevSignal !== null && state.signal < state.prevSignal && state.cameFrom !== null && directions.includes(state.cameFrom)) {
-      return { kind: "move", direction: state.cameFrom, why: "back" };
-    }
-    const candidates = directions.filter((direction) => direction !== entryFrom && !tried.includes(direction));
-    const fresh = candidates.filter((direction) => !visited.has(direction));
-    const pool = fresh.length > 0 ? fresh : candidates;
-    let target = null;
-    let why = "new";
-    if (state !== null && !state.returned && state.lastMove !== null && candidates.includes(state.lastMove)) {
-      target = state.lastMove;
-      why = "course";
-    } else if (pool.length > 0) {
-      target = pool[0] ?? null;
-    }
-    if (target === null) {
-      if (entryFrom !== null && directions.includes(entryFrom)) {
-        return { kind: "move", direction: entryFrom, why: "retreat" };
+    const untried = directions.filter((direction) => (cell.passes[direction] ?? "untried") === "untried");
+    if (untried.length > 0) {
+      const targetVisited = (direction) => {
+        if (state === null) return false;
+        const [dx, dy] = DELTA[direction];
+        return state.cells[cellKey(state.x + dx, state.y + dy)] !== void 0;
+      };
+      let target = null;
+      if (state?.trend === "up" && state.lastMove !== null && untried.includes(state.lastMove)) {
+        target = state.lastMove;
       }
-      return canExit ? { kind: "exit" } : null;
+      if (target === null) {
+        const fresh = untried.filter((direction) => !targetVisited(direction));
+        const pool = fresh.length > 0 ? fresh : untried;
+        target = pool[0] ?? null;
+      }
+      if (target !== null) {
+        return { kind: "move", direction: target, why: state?.trend === "up" && target === state.lastMove ? "course" : "explore" };
+      }
     }
-    return { kind: "move", direction: target, why };
+    if (state !== null) {
+      const step = stepToNearestFrontier(state);
+      if (step !== null && directions.includes(step)) {
+        return { kind: "move", direction: step, why: "frontier" };
+      }
+    }
+    const climbing = DIRECTIONS.filter((direction) => directions.includes(direction) && cell.passes[direction] === "up");
+    if (climbing.length > 0) {
+      const last = state?.lastMove ?? null;
+      const target = last !== null && climbing.includes(last) ? last : climbing[0];
+      if (target !== void 0) return { kind: "move", direction: target, why: "course" };
+    }
+    if (directions.length === 0) {
+      const anyFrontier = state !== null && frontierCells(state).length > 0;
+      return canExit && !anyFrontier ? { kind: "exit" } : null;
+    }
+    return null;
   }
   var ANOMALY_HP_GUARD_PERCENT = 25;
   var HEALTH_RATIO_RE = /Здоровье:\s*(\d+)\s*\/\s*(\d+)/u;
@@ -726,9 +748,6 @@
     }
     if (state === null || lastBoundary === "picked" || lastBoundary === "left") return null;
     return state;
-  }
-  function isAnomalyFieldText(text) {
-    return /Сигнал:|Сила сигнала|[Рр]азведано|пришли с\s+(Севера|Юга|Запада|Востока)|на краю аномалии/u.test(text);
   }
   var ENTRY_TYPE_RE = /Перед глазами аномалия:\s*([^\n]+)/iu;
   var BONUS_LIMIT_RE = /Доп\. лимит\s*\((\d+)\)/iu;
@@ -1176,7 +1195,7 @@
     const canBolt = byText("\u0431\u0440\u043E\u0441\u0438\u0442\u044C \u0431\u043E\u043B\u0442") !== null;
     const canExit = byText("\u0432\u044B\u0439\u0442\u0438 \u0438\u0437 \u0430\u043D\u043E\u043C\u0430\u043B\u0438\u0438") !== null;
     const inField = canBolt || canExit;
-    const artifactHere = isArtifactHereText(text) || inField && (state?.signal ?? 0) >= ANOMALY_MAX_SIGNAL;
+    const artifactHere = isArtifactHereText(text) || !state?.deaf && inField && (state?.signal ?? 0) >= ANOMALY_MAX_SIGNAL;
     if (artifactHere) {
       return {
         kind: "anomaly",
@@ -1331,7 +1350,7 @@
     }
     const target = buttons.find((button) => comparableText(button).includes(move.direction)) ?? null;
     if (target === null) return null;
-    const whyNote = move.why === "back" ? state?.silence ? "\u0434\u0435\u0442\u0435\u043A\u0442\u043E\u0440 \u043C\u043E\u043B\u0447\u0438\u0442 \u2014 \u0432\u0435\u0442\u043A\u0430 \u043D\u0435 \u0442\u0430, \u0432\u043E\u0437\u0432\u0440\u0430\u0449\u0430\u0435\u043C\u0441\u044F" : "\u0441\u0438\u0433\u043D\u0430\u043B \u0441\u043B\u0430\u0431\u0435\u0435\u0442 \u2014 \u0432\u043E\u0437\u0432\u0440\u0430\u0449\u0430\u0435\u043C\u0441\u044F \u043A \u0440\u0430\u0437\u0432\u0438\u043B\u043A\u0435" : move.why === "retreat" ? "\u043D\u0430\u043F\u0440\u0430\u0432\u043B\u0435\u043D\u0438\u044F \u0437\u0434\u0435\u0441\u044C \u0438\u0441\u0447\u0435\u0440\u043F\u0430\u043D\u044B \u2014 \u043E\u0442\u0441\u0442\u0443\u043F\u0430\u0435\u043C \u043A \u043F\u0440\u0435\u0434\u044B\u0434\u0443\u0449\u0435\u0439 \u0440\u0430\u0437\u0432\u0438\u043B\u043A\u0435" : move.why === "course" ? state?.trend === "up" ? "\u0441\u0438\u0433\u043D\u0430\u043B \u043A\u0440\u0435\u043F\u043D\u0435\u0442 \u2014 \u0434\u0435\u0440\u0436\u0438\u043C \u043A\u0443\u0440\u0441" : "\u0441\u0438\u0433\u043D\u0430\u043B \u0440\u0430\u0441\u0442\u0451\u0442 \u2014 \u0434\u0435\u0440\u0436\u0438\u043C \u043A\u0443\u0440\u0441" : "\u043F\u0440\u043E\u0431\u0443\u0435\u043C \u043D\u043E\u0432\u043E\u0435 \u043D\u0430\u043F\u0440\u0430\u0432\u043B\u0435\u043D\u0438\u0435";
+    const whyNote = move.why === "back" ? state?.silence ? "\u0434\u0435\u0442\u0435\u043A\u0442\u043E\u0440 \u043C\u043E\u043B\u0447\u0438\u0442 \u2014 \u0432\u0435\u0442\u043A\u0430 \u043D\u0435 \u0442\u0430, \u0432\u043E\u0437\u0432\u0440\u0430\u0449\u0430\u0435\u043C\u0441\u044F" : "\u0441\u0438\u0433\u043D\u0430\u043B \u0441\u043B\u0430\u0431\u0435\u0435\u0442 \u2014 \u0432\u0435\u0442\u043A\u0430 \u043C\u0435\u0440\u0442\u0432\u0430, \u043E\u0442\u0441\u0442\u0443\u043F\u0430\u0435\u043C" : move.why === "frontier" ? "\u0437\u0434\u0435\u0441\u044C \u0432\u0441\u0451 \u043F\u0440\u043E\u0432\u0435\u0440\u0435\u043D\u043E \u2014 \u0438\u0434\u0451\u043C \u043A \u0431\u043B\u0438\u0436\u0430\u0439\u0448\u0435\u0439 \u043A\u043B\u0435\u0442\u043A\u0435 \u0441 \u043D\u0435\u0438\u0437\u0432\u0435\u0434\u0430\u043D\u043D\u044B\u043C\u0438 \u043F\u0440\u043E\u0445\u043E\u0434\u0430\u043C\u0438" : move.why === "course" ? state?.trend === "up" ? "\u0441\u0438\u0433\u043D\u0430\u043B \u043A\u0440\u0435\u043F\u043D\u0435\u0442 \u2014 \u0434\u0435\u0440\u0436\u0438\u043C \u043A\u0443\u0440\u0441" : "\u0441\u0438\u0433\u043D\u0430\u043B \u0440\u0430\u0441\u0442\u0451\u0442 \u2014 \u0434\u0435\u0440\u0436\u0438\u043C \u043A\u0443\u0440\u0441" : "\u043F\u0440\u043E\u0432\u0435\u0440\u044F\u0435\u043C \u043D\u043E\u0432\u044B\u0439 \u043C\u0430\u0440\u0448\u0440\u0443\u0442";
     return {
       kind: "anomaly",
       title: `\u041D\u0430\u0436\u043C\u0438 \xAB${target.text.trim()}\xBB`,
@@ -4871,7 +4890,7 @@
       } catch {
         return;
       }
-      const local = "0.3.261111.1238";
+      const local = "0.3.261111.1403";
       if (remote === null || !isNewerVersion(remote, local)) return;
       const firstNotice = this.state.updateAvailable?.remote !== remote;
       this.state.updateAvailable = { remote, local };
@@ -6568,7 +6587,7 @@
       };
       if (true) {
         const versionEl = shadow.querySelector(".version");
-        if (versionEl) versionEl.textContent = "0.3.261111.1238";
+        if (versionEl) versionEl.textContent = "0.3.261111.1403";
       }
       this.elements.toggle.addEventListener("click", () => actions.onToggleRecording());
       this.elements.updateReload.addEventListener("click", () => {
@@ -7381,7 +7400,7 @@
     const start = async () => {
       try {
         if (typeof console !== "undefined" && console.info) {
-          console.info(`[Stalker Assistant] v${"0.3.261111.1238"} started`);
+          console.info(`[Stalker Assistant] v${"0.3.261111.1403"} started`);
         }
         runtime.panel = new Panel({
           onToggleRecording: () => {
