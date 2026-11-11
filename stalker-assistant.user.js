@@ -1,7 +1,7 @@
 /* ==UserScript==
 // @name         Stalker Assistant
 // @namespace    local.stalker-assistant
-// @version      0.3.261111.1454
+// @version      0.3.261111.1509
 // @description  Сбор событий, клавиатур и решений в игре «Сталкер» (VK)
 // @match        https://vk.com/*
 // @match        https://vk.ru/*
@@ -734,6 +734,7 @@
     return null;
   }
   var ANOMALY_HP_GUARD_PERCENT = 25;
+  var ANOMALY_MIN_BOLTS_TO_ENTER = 100;
   var HEALTH_RATIO_RE = /Здоровье:\s*(\d+)\s*\/\s*(\d+)/u;
   function healthPercentFrom(text) {
     const match = HEALTH_RATIO_RE.exec(text);
@@ -1160,7 +1161,7 @@
   function findHealButton(keyboard) {
     return flattenButtons(keyboard).find((button) => /^➕?\s*Лечени/iu.test(button.text)) ?? null;
   }
-  function anomalyAdvice(keyboard, text, ts, state, events, exitWish, typeRules, limits) {
+  function anomalyAdvice(keyboard, text, ts, state, events, exitWish, typeRules, limits, bolts) {
     const buttons = flattenButtons(keyboard);
     const byText = (needle) => buttons.find((button) => comparableText(button).includes(needle)) ?? null;
     const leave = byText("\u043F\u043E\u043A\u0438\u043D\u0443\u0442\u044C");
@@ -1259,6 +1260,18 @@
           kind: "anomaly",
           title: `\u041D\u0430\u0436\u043C\u0438 \xAB${away.text.trim()}\xBB`,
           note: `\xAB${typeName ?? "\u0430\u043D\u043E\u043C\u0430\u043B\u0438\u044F"}\xBB: \u041B\u0438\u0447\u043D\u044B\u0439 (0) \u0438 \u0414\u043E\u043F. (0) \u2014 \u0431\u0440\u0430\u0442\u044C \u0432 \u043F\u043E\u043B\u0435 \u043D\u0435\u0447\u0435\u0433\u043E, \u043E\u0431\u0445\u043E\u0434\u0438\u043C.`,
+          button: away,
+          ts
+        };
+      }
+      const boltsKnown = bolts?.count ?? null;
+      const entryPaused = bolts?.locked === true || boltsKnown !== null && boltsKnown < ANOMALY_MIN_BOLTS_TO_ENTER;
+      if (entryPaused) {
+        if (away === null) return null;
+        return {
+          kind: "anomaly",
+          title: `\u041D\u0430\u0436\u043C\u0438 \xAB${away.text.trim()}\xBB`,
+          note: bolts?.locked === true ? "\u0410\u043D\u043E\u043C\u0430\u043B\u0438\u0438 \u043F\u0440\u0438\u043E\u0441\u0442\u0430\u043D\u043E\u0432\u043B\u0435\u043D\u044B: \u0432 \u043F\u0440\u043E\u0448\u043B\u044B\u0439 \u0440\u0430\u0437 \u0431\u043E\u043B\u0442\u043E\u0432 \u0431\u044B\u043B\u043E \u043C\u0435\u043D\u044C\u0448\u0435 \u043F\u043E\u0440\u043E\u0433\u0430. \u0412\u043E\u0437\u043E\u0431\u043D\u043E\u0432\u0438\u0442\u044C: \u041F\u0440\u0430\u0432\u0438\u043B\u0430 \u2192 \u0421\u043E\u0431\u044B\u0442\u0438\u044F \u2192 \xAB\u0410\u043D\u043E\u043C\u0430\u043B\u0438\u044F\xBB \u2192 \xAB\u0417\u0430\u0445\u043E\u0434\u0438\u0442\u044C\xBB." : `\u0411\u043E\u043B\u0442\u043E\u0432 ${boltsKnown} < ${ANOMALY_MIN_BOLTS_TO_ENTER} \u2014 \u043D\u0430 \u043F\u0440\u043E\u0445\u043E\u0436\u0434\u0435\u043D\u0438\u0435 \u043C\u043E\u0436\u0435\u0442 \u043D\u0435 \u0445\u0432\u0430\u0442\u0438\u0442\u044C. \u041D\u043E\u0432\u044B\u0435 \u0430\u043D\u043E\u043C\u0430\u043B\u0438\u0438 \u043F\u0440\u0438\u043E\u0441\u0442\u0430\u043D\u043E\u0432\u043B\u0435\u043D\u044B (\u0432\u043E\u0437\u043E\u0431\u043D\u043E\u0432\u0438\u0442\u044C: \u041F\u0440\u0430\u0432\u0438\u043B\u0430 \u2192 \u0421\u043E\u0431\u044B\u0442\u0438\u044F \u2192 \xAB\u0417\u0430\u0445\u043E\u0434\u0438\u0442\u044C\xBB).`,
           button: away,
           ts
         };
@@ -1739,7 +1752,8 @@
         options?.events,
         options?.anomalyExit === true,
         options?.anomalyTypeRules ?? null,
-        options?.anomalyLimits ?? null
+        options?.anomalyLimits ?? null,
+        options?.anomalyBolts ?? null
       );
       if (anomaly) return anomaly;
     }
@@ -3664,6 +3678,8 @@
       autoRepeatPauseUntil: 0,
       captchaPausedUntil: 0,
       blindFishing: false,
+      anomalyEntryPaused: false,
+      anomalyBolts: null,
       autoDelays: { ...DEFAULT_AUTO_DELAYS },
       autoClicks: 0,
       autoReset: true,
@@ -3777,6 +3793,11 @@
     battleKeyboards = [];
     /** Состояние навигатора поля аномалии по каждому чату. */
     anomalyStates = /* @__PURE__ */ new Map();
+    /** Последний известный счётчик болтов из шапок поля («У вас N болтов»). */
+    anomalyBoltsByPeer = /* @__PURE__ */ new Map();
+    /** Вход в новые аномалии приостановлен: после поля с болтами < порога —
+     * до ручного «Заходить» в правилах (мета anomalyEntryLocked). */
+    anomalyEntryLocked = false;
     /**
      * Из аномалии пора выходить (страж HP): флаг по чатам, живёт до «Вы вышли
      * из аномалии» / входа в новое поле. После подбора артефакта флаг больше
@@ -3929,6 +3950,8 @@
       }
       this.state.autoReset = sanitizeBoolean(await getMeta("autoReset", true), true);
       this.state.manualTakeover = sanitizeBoolean(await getMeta("manualTakeover", true), true);
+      this.anomalyEntryLocked = sanitizeBoolean(await getMeta("anomalyEntryLocked", false), false);
+      this.state.anomalyEntryPaused = this.anomalyEntryLocked;
       this.state.forkRules = sanitizeForkRules(await getMeta("forkRules", []));
       this.state.eventRules = sanitizeEventRules(await getMeta("eventRules", DEFAULT_EVENT_RULES));
       const storedTypes = sanitizeAnomalyTypeRules(await getMeta("anomalyTypeRules", null));
@@ -3985,6 +4008,10 @@
       const restoredAnomaly = restoreAnomalyState(anomalyEntries);
       if (restoredAnomaly !== null && anomalyPeer !== null) {
         this.anomalyStates.set(anomalyPeer, restoredAnomaly);
+        if (restoredAnomaly.bolts !== null) {
+          this.anomalyBoltsByPeer.set(anomalyPeer, restoredAnomaly.bolts);
+          this.state.anomalyBolts = restoredAnomaly.bolts;
+        }
       }
       const botTexts = existingMessages.filter((message) => !message.out && message.text).sort((a, b) => a.ts - b.ts);
       for (const message of botTexts) this.lastBotText.set(message.peerId, message.text);
@@ -4159,6 +4186,26 @@
       this.logAuto(hp !== null ? { event: "anomaly-exit-wish", reason, hp } : { event: "anomaly-exit-wish", reason });
       if (this.state.mode === "auto") this.scheduleAuto();
     }
+    /**
+     * Порог болтов (решение игрока 12.11): закончив поле с болтами меньше
+     * порога (или открыв экран входа с ними), бот приостанавливает вход в
+     * НОВЫЕ аномалии — на прохождение может не хватить. Пауза переживает
+     * перезагрузку (мета anomalyEntryLocked) и снимается только ручным
+     * «Заходить» в правилах (setEventRule). Внутри поля правило не действует:
+     * начатое доигрывается; болты внутри поля пополняются (поиск, находки).
+     */
+    maybePauseAnomalyEntry(peerId) {
+      if (this.anomalyEntryLocked) return;
+      const bolts = this.anomalyBoltsByPeer.get(peerId);
+      if (bolts === void 0 || bolts >= ANOMALY_MIN_BOLTS_TO_ENTER) return;
+      this.anomalyEntryLocked = true;
+      this.state.anomalyEntryPaused = true;
+      this.state.anomalyBolts = bolts;
+      void setMeta("anomalyEntryLocked", true);
+      this.logAuto({ event: "anomaly-locked", bolts });
+      this.evaluateAdvice();
+      this.panel?.update(this.state);
+    }
     async setAutoDelay(key, valueMs) {
       const safe = Math.max(0, Math.min(6e5, Math.round(valueMs)));
       this.state.autoDelays = { ...this.state.autoDelays, [key]: safe };
@@ -4256,6 +4303,12 @@
       const valid = event === "anomaly" ? isAnomalyEventAction(action) : event === "rift" ? isRiftEventAction(action) : event === "caches" ? isCacheEventAction(action) : isHelicopterEventAction(action);
       if (!valid) return;
       this.state.eventRules = { ...this.state.eventRules, [event]: action };
+      if (event === "anomaly" && action === "enter" && this.anomalyEntryLocked) {
+        this.anomalyEntryLocked = false;
+        this.state.anomalyEntryPaused = false;
+        void setMeta("anomalyEntryLocked", false);
+        this.logAuto({ event: "anomaly-unlocked", bolts: this.state.anomalyBolts });
+      }
       this.logAuto({ event: "event-rule-set", rule: event, action });
       await setMeta("eventRules", this.state.eventRules);
       this.evaluateAdvice();
@@ -4913,7 +4966,7 @@
       } catch {
         return;
       }
-      const local = "0.3.261111.1454";
+      const local = "0.3.261111.1509";
       if (remote === null || !isNewerVersion(remote, local)) return;
       const firstNotice = this.state.updateAvailable?.remote !== remote;
       this.state.updateAvailable = { remote, local };
@@ -5220,6 +5273,11 @@
           }
           if (fresh && message.text && isAnomalyFieldText(message.text)) {
             this.anomalyStates.set(message.peerId, updateAnomalyState(this.anomalyStates.get(message.peerId) ?? null, message.text, message.conversationMessageId));
+            const updatedAnomaly = this.anomalyStates.get(message.peerId);
+            if (updatedAnomaly?.bolts != null) {
+              this.anomalyBoltsByPeer.set(message.peerId, updatedAnomaly.bolts);
+              this.state.anomalyBolts = updatedAnomaly.bolts;
+            }
             if (this.state.anomalyHpGuard) {
               const hp = healthPercentFrom(message.text);
               if (hp !== null && hp <= ANOMALY_HP_GUARD_PERCENT) this.latchAnomalyExit(message.peerId, "low-hp", hp);
@@ -5237,6 +5295,7 @@
                 this.logAuto({ event: "anomaly-reset", reason: reset });
               }
             }
+            if (reset === "left" || reset === "enter") this.maybePauseAnomalyEntry(message.peerId);
             if (reset === "left" || reset === "enter") this.anomalyExitByPeer.delete(message.peerId);
             if (reset === "enter") this.restPhaseByPeer.delete(message.peerId);
             if (reset === "enter") {
@@ -5438,6 +5497,10 @@
         anomalyExit: this.anomalyExitByPeer.has(peerId),
         anomalyTypeRules: this.state.anomalyTypeRules.rules,
         anomalyLimits: this.anomalyLimitsByPeer.get(peerId) ?? null,
+        anomalyBolts: {
+          count: this.anomalyBoltsByPeer.get(peerId) ?? null,
+          locked: this.anomalyEntryLocked
+        },
         rest: {
           enabled: this.state.restGuard,
           thresholdPercent: this.state.restHpPercent,
@@ -6306,6 +6369,12 @@
           color: #a0e0b8; font-size: 11px;
         }
         .blind-note.on { display: block; }
+        .anomaly-note {
+          display: none; margin-top: 8px; padding: 7px 8px;
+          border: 1px solid #8a6a2e; border-radius: 6px; background: #2a2014;
+          color: #ffd98a; font-size: 11px; font-weight: 600;
+        }
+        .anomaly-note.on { display: block; }
         .reload-note {
           display: none; margin-top: 8px; padding: 7px 8px;
           border: 1px solid #8a6a2e; border-radius: 6px; background: #2a2014;
@@ -6430,6 +6499,7 @@
         <div class="tab-note"></div>
         <div class="captcha-note"></div>
         <div class="blind-note"></div>
+        <div class="anomaly-note"></div>
         <div class="reload-note"></div>
         <div class="update-note">
           <div class="update-text"></div>
@@ -6559,6 +6629,7 @@
         tabNote: get(".tab-note"),
         captchaNote: get(".captcha-note"),
         blindNote: get(".blind-note"),
+        anomalyNote: get(".anomaly-note"),
         reloadNote: get(".reload-note"),
         updateNote: get(".update-note"),
         updateText: get(".update-text"),
@@ -6610,7 +6681,7 @@
       };
       if (true) {
         const versionEl = shadow.querySelector(".version");
-        if (versionEl) versionEl.textContent = "0.3.261111.1454";
+        if (versionEl) versionEl.textContent = "0.3.261111.1509";
       }
       this.elements.toggle.addEventListener("click", () => actions.onToggleRecording());
       this.elements.updateReload.addEventListener("click", () => {
@@ -6704,6 +6775,12 @@
       this.elements.blindNote.classList.toggle("on", state.blindFishing);
       if (state.blindFishing) {
         this.elements.blindNote.textContent = "\u{1F441} \u0420\u044B\u0431\u0430\u043B\u043A\u0430 \u043F\u0440\u0438\u043E\u0441\u0442\u0430\u043D\u043E\u0432\u043B\u0435\u043D\u0430: \u0432\u043A\u043B\u0430\u0434\u043A\u0430 \u0432 \u0444\u043E\u043D\u0435, \u0437\u0430\u0434\u0430\u043D\u0438\u044F \u043D\u0435 \u043C\u043E\u043D\u0442\u0438\u0440\u0443\u044E\u0442\u0441\u044F. \u0412\u0435\u0440\u043D\u0438 \u0432\u043A\u043B\u0430\u0434\u043A\u0443 \u043D\u0430 \u043F\u0435\u0440\u0435\u0434\u043D\u0438\u0439 \u043F\u043B\u0430\u043D \u2014 \u0431\u043E\u0442 \u043F\u0440\u043E\u0434\u043E\u043B\u0436\u0438\u0442 \u0441\u0430\u043C.";
+      }
+      const anomalyPaused = state.anomalyEntryPaused;
+      this.elements.anomalyNote.classList.toggle("on", anomalyPaused);
+      if (anomalyPaused) {
+        const bolts = state.anomalyBolts !== null ? String(state.anomalyBolts) : "\u043C\u0435\u043D\u044C\u0448\u0435 \u043F\u043E\u0440\u043E\u0433\u0430";
+        this.elements.anomalyNote.textContent = `\u{1F529} \u0411\u043E\u043B\u0442\u043E\u0432 ${bolts} \u2014 \u043D\u043E\u0432\u044B\u0435 \u0430\u043D\u043E\u043C\u0430\u043B\u0438\u0438 \u043F\u0440\u0438\u043E\u0441\u0442\u0430\u043D\u043E\u0432\u043B\u0435\u043D\u044B, \u0447\u0442\u043E\u0431\u044B \u043D\u0435 \u0437\u0430\u0441\u0442\u0440\u044F\u0442\u044C \u0432 \u043F\u043E\u043B\u0435. \u0412\u043E\u0437\u043E\u0431\u043D\u043E\u0432\u0438\u0442\u044C: \u041F\u0440\u0430\u0432\u0438\u043B\u0430 \u2192 \u0421\u043E\u0431\u044B\u0442\u0438\u044F \u2192 \xAB\u0410\u043D\u043E\u043C\u0430\u043B\u0438\u044F\xBB \u2192 \xAB\u0417\u0430\u0445\u043E\u0434\u0438\u0442\u044C\xBB.`;
       }
       const reloadScheduled = state.pageReloadScheduledAt > Date.now();
       const reloadSuspended = state.pageReloadSuspendedUntil > Date.now();
@@ -7423,7 +7500,7 @@
     const start = async () => {
       try {
         if (typeof console !== "undefined" && console.info) {
-          console.info(`[Stalker Assistant] v${"0.3.261111.1454"} started`);
+          console.info(`[Stalker Assistant] v${"0.3.261111.1509"} started`);
         }
         runtime.panel = new Panel({
           onToggleRecording: () => {
