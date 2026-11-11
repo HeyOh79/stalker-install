@@ -1,7 +1,7 @@
 /* ==UserScript==
 // @name         Stalker Assistant
 // @namespace    local.stalker-assistant
-// @version      0.3.261111.1509
+// @version      0.3.261111.1523
 // @description  Сбор событий, клавиатур и решений в игре «Сталкер» (VK)
 // @match        https://vk.com/*
 // @match        https://vk.ru/*
@@ -4966,7 +4966,7 @@
       } catch {
         return;
       }
-      const local = "0.3.261111.1509";
+      const local = "0.3.261111.1523";
       if (remote === null || !isNewerVersion(remote, local)) return;
       const firstNotice = this.state.updateAvailable?.remote !== remote;
       this.state.updateAvailable = { remote, local };
@@ -5196,7 +5196,8 @@
         }
         for (const message of effective) {
           const staleDom = message.source === "dom" && message.conversationMessageId !== null && message.conversationMessageId < (prevBotCmid.get(message.peerId) ?? message.conversationMessageId);
-          const fresh = !history && !staleDom;
+          const newViaTransport = message.conversationMessageId !== null && message.conversationMessageId > (prevBotCmid.get(message.peerId) ?? 0);
+          const fresh = (!history || newViaTransport) && !staleDom;
           if (message.out) {
             if (fresh) {
               const pending = this.state.pendingChoice;
@@ -6681,7 +6682,7 @@
       };
       if (true) {
         const versionEl = shadow.querySelector(".version");
-        if (versionEl) versionEl.textContent = "0.3.261111.1509";
+        if (versionEl) versionEl.textContent = "0.3.261111.1523";
       }
       this.elements.toggle.addEventListener("click", () => actions.onToggleRecording());
       this.elements.updateReload.addEventListener("click", () => {
@@ -7500,7 +7501,7 @@
     const start = async () => {
       try {
         if (typeof console !== "undefined" && console.info) {
-          console.info(`[Stalker Assistant] v${"0.3.261111.1509"} started`);
+          console.info(`[Stalker Assistant] v${"0.3.261111.1523"} started`);
         }
         runtime.panel = new Panel({
           onToggleRecording: () => {
