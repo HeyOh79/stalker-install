@@ -1,7 +1,7 @@
 /* ==UserScript==
 // @name         Stalker Assistant
 // @namespace    local.stalker-assistant
-// @version      0.3.261111.1436
+// @version      0.3.261111.1454
 // @description  Сбор событий, клавиатур и решений в игре «Сталкер» (VK)
 // @match        https://vk.com/*
 // @match        https://vk.ru/*
@@ -766,17 +766,24 @@
     return state;
   }
   var ENTRY_TYPE_RE = /Перед глазами аномалия:\s*([^\n]+)/iu;
+  var PERSONAL_LIMIT_RE = /Личный лимит\s*\((\d+)\)/iu;
   var BONUS_LIMIT_RE = /Доп\. лимит\s*\((\d+)\)/iu;
   function entryAnomalyName(text) {
     const match = ENTRY_TYPE_RE.exec(text);
     const name = match?.[1]?.trim();
     return name ? name : null;
   }
-  function bonusLimitFrom(text) {
-    const match = BONUS_LIMIT_RE.exec(text);
-    if (!match) return null;
-    const value = Number(match[1]);
-    return Number.isFinite(value) ? value : null;
+  function entryLimitsFrom(text) {
+    const numberFrom = (re) => {
+      const match = re.exec(text);
+      if (!match) return null;
+      const value = Number(match[1]);
+      return Number.isFinite(value) ? value : null;
+    };
+    return {
+      personal: numberFrom(PERSONAL_LIMIT_RE),
+      bonus: numberFrom(BONUS_LIMIT_RE)
+    };
   }
 
   // src/core/events.ts
@@ -1153,7 +1160,7 @@
   function findHealButton(keyboard) {
     return flattenButtons(keyboard).find((button) => /^➕?\s*Лечени/iu.test(button.text)) ?? null;
   }
-  function anomalyAdvice(keyboard, text, ts, state, events, exitWish, typeRules, bonusLimit) {
+  function anomalyAdvice(keyboard, text, ts, state, events, exitWish, typeRules, limits) {
     const buttons = flattenButtons(keyboard);
     const byText = (needle) => buttons.find((button) => comparableText(button).includes(needle)) ?? null;
     const leave = byText("\u043F\u043E\u043A\u0438\u043D\u0443\u0442\u044C");
@@ -1246,12 +1253,12 @@
       const typeName = entryAnomalyName(text);
       const typeAction = typeName !== null ? typeRules?.[typeName] : void 0;
       const away = byText("\u0443\u0439\u0442\u0438");
-      if (bonusLimit === 0) {
+      if (limits !== null && limits !== void 0 && limits.personal === 0 && limits.bonus === 0) {
         if (away === null) return null;
         return {
           kind: "anomaly",
           title: `\u041D\u0430\u0436\u043C\u0438 \xAB${away.text.trim()}\xBB`,
-          note: `\xAB${typeName ?? "\u0430\u043D\u043E\u043C\u0430\u043B\u0438\u044F"}\xBB: \u0414\u043E\u043F. \u043B\u0438\u043C\u0438\u0442 (0) \u2014 \u0446\u0435\u043D\u043D\u043E\u0433\u043E \u0430\u0440\u0442\u0435\u0444\u0430\u043A\u0442\u0430 \u0432 \u044D\u0442\u043E\u043C \u043F\u043E\u043B\u0435 \u043D\u0435\u0442, \u043E\u0431\u0445\u043E\u0434\u0438\u043C.`,
+          note: `\xAB${typeName ?? "\u0430\u043D\u043E\u043C\u0430\u043B\u0438\u044F"}\xBB: \u041B\u0438\u0447\u043D\u044B\u0439 (0) \u0438 \u0414\u043E\u043F. (0) \u2014 \u0431\u0440\u0430\u0442\u044C \u0432 \u043F\u043E\u043B\u0435 \u043D\u0435\u0447\u0435\u0433\u043E, \u043E\u0431\u0445\u043E\u0434\u0438\u043C.`,
           button: away,
           ts
         };
@@ -1732,7 +1739,7 @@
         options?.events,
         options?.anomalyExit === true,
         options?.anomalyTypeRules ?? null,
-        options?.anomalyBonusLimit ?? null
+        options?.anomalyLimits ?? null
       );
       if (anomaly) return anomaly;
     }
@@ -3781,7 +3788,7 @@
      * «Доп. лимит (N)» текущего поля по чатам (с экрана входа): 0 — ценного
      * артефакта в поле нет, на экране входа советуем «Уйти».
      */
-    anomalyBonusLimitByPeer = /* @__PURE__ */ new Map();
+    anomalyLimitsByPeer = /* @__PURE__ */ new Map();
     /** Вертолёт: до этого момента действует окно «обыск идёт» (ждём/не мешаем). */
     helicopterUntilByPeer = /* @__PURE__ */ new Map();
     /** Схрон: до этого момента действует окно «обыск идёт» (ждём или прерываем). */
@@ -4186,7 +4193,7 @@
       this.lastBotCmid.clear();
       this.anomalyStates.clear();
       this.anomalyExitByPeer.clear();
-      this.anomalyBonusLimitByPeer.clear();
+      this.anomalyLimitsByPeer.clear();
       this.anomalyStuckCycles.clear();
       this.lastHpPercent.clear();
       this.restPhaseByPeer.clear();
@@ -4441,7 +4448,7 @@
       this.lastBotCmid.clear();
       this.anomalyStates.clear();
       this.anomalyExitByPeer.clear();
-      this.anomalyBonusLimitByPeer.clear();
+      this.anomalyLimitsByPeer.clear();
       this.anomalyStuckCycles.clear();
       this.lastHpPercent.clear();
       this.restPhaseByPeer.clear();
@@ -4906,7 +4913,7 @@
       } catch {
         return;
       }
-      const local = "0.3.261111.1436";
+      const local = "0.3.261111.1454";
       if (remote === null || !isNewerVersion(remote, local)) return;
       const firstNotice = this.state.updateAvailable?.remote !== remote;
       this.state.updateAvailable = { remote, local };
@@ -5233,15 +5240,15 @@
             if (reset === "left" || reset === "enter") this.anomalyExitByPeer.delete(message.peerId);
             if (reset === "enter") this.restPhaseByPeer.delete(message.peerId);
             if (reset === "enter") {
-              this.anomalyBonusLimitByPeer.set(message.peerId, bonusLimitFrom(message.text));
+              this.anomalyLimitsByPeer.set(message.peerId, entryLimitsFrom(message.text));
               this.rememberAnomalyType(message.peerId, entryAnomalyName(message.text));
             } else {
-              this.anomalyBonusLimitByPeer.delete(message.peerId);
+              this.anomalyLimitsByPeer.delete(message.peerId);
             }
             if (fresh && message.text && isSceneChangeText(message.text)) {
               this.anomalyExitByPeer.delete(message.peerId);
               this.anomalyStates.delete(message.peerId);
-              this.anomalyBonusLimitByPeer.delete(message.peerId);
+              this.anomalyLimitsByPeer.delete(message.peerId);
             }
           }
           if (fresh && message.text && isHelicopterText(message.text)) {
@@ -5430,7 +5437,7 @@
         caches: Date.now() < (this.cacheUntilByPeer.get(peerId) ?? 0),
         anomalyExit: this.anomalyExitByPeer.has(peerId),
         anomalyTypeRules: this.state.anomalyTypeRules.rules,
-        anomalyBonusLimit: this.anomalyBonusLimitByPeer.get(peerId) ?? null,
+        anomalyLimits: this.anomalyLimitsByPeer.get(peerId) ?? null,
         rest: {
           enabled: this.state.restGuard,
           thresholdPercent: this.state.restHpPercent,
@@ -6603,7 +6610,7 @@
       };
       if (true) {
         const versionEl = shadow.querySelector(".version");
-        if (versionEl) versionEl.textContent = "0.3.261111.1436";
+        if (versionEl) versionEl.textContent = "0.3.261111.1454";
       }
       this.elements.toggle.addEventListener("click", () => actions.onToggleRecording());
       this.elements.updateReload.addEventListener("click", () => {
@@ -7416,7 +7423,7 @@
     const start = async () => {
       try {
         if (typeof console !== "undefined" && console.info) {
-          console.info(`[Stalker Assistant] v${"0.3.261111.1436"} started`);
+          console.info(`[Stalker Assistant] v${"0.3.261111.1454"} started`);
         }
         runtime.panel = new Panel({
           onToggleRecording: () => {
