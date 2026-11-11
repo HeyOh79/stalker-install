@@ -1,7 +1,7 @@
 /* ==UserScript==
 // @name         Stalker Assistant
 // @namespace    local.stalker-assistant
-// @version      0.3.261110.1233
+// @version      0.3.261111.0259
 // @description  Сбор событий, клавиатур и решений в игре «Сталкер» (VK)
 // @match        https://vk.com/*
 // @match        https://vk.ru/*
@@ -3481,6 +3481,8 @@
   var PAGE_RELOAD_LOOP_WINDOW_MS = 30 * 6e4;
   var PAGE_RELOAD_LOOP_LIMIT = 3;
   var PAGE_RELOAD_LOG_KEY = "stalkerPageReloadLog";
+  var DIAG_BUFFER_KEY = "stalkerDiagBuffer";
+  var DIAG_BUFFER_CAP = 200;
   var SEEN_KEYS_CAP = 12e3;
   var USER_ACTIVITY_WINDOW_MS = 4e3;
   var OTHER_TAB_AUTO_WINDOW_MS = 15e3;
@@ -3868,6 +3870,7 @@
       this.initDone = true;
       await this.drainPendingEvents();
       this.relogPageReloadMarkers();
+      this.relogStashedDiagnostics();
       void this.pruneLogs();
     }
     /**
@@ -4563,11 +4566,15 @@
      * её надолго — нужно два промаха подряд.
      */
     checkKeyboardLiveness() {
+      this.maybePageReload();
       if (this.state.mode === "observe") return;
       if (this.captchaActive()) return;
       const peerId = this.state.currentPeerId;
-      if (peerId === null || !this.isGamePeer(peerId)) return;
-      this.maybePageReload(peerId);
+      if (peerId === null || !this.isGamePeer(peerId)) {
+        this.maybePageReload();
+        return;
+      }
+      this.maybePageReload();
       if (this.state.autoReset && this.state.mode === "auto" && Date.now() - this.lastProgressAt > STALE_STATE_RESET_MS) {
         this.logAuto({ event: "auto-reset", idleMs: Date.now() - this.lastProgressAt });
         this.resetState();
@@ -4761,7 +4768,7 @@
       } catch {
         return;
       }
-      const local = "0.3.261110.1233";
+      const local = "0.3.261111.0259";
       if (remote === null || !isNewerVersion(remote, local)) return;
       const firstNotice = this.state.updateAvailable?.remote !== remote;
       this.state.updateAvailable = { remote, local };
@@ -4812,7 +4819,12 @@
      * страницу. Пока идёт отсчёт, любое изменение мира (ответ игры, смена
      * режима, длинное событие, уход вкладки в фон) отменяет перезагрузку.
      */
-    maybePageReload(peerId) {
+    maybePageReload() {
+      const peerId = this.state.currentPeerId;
+      if (peerId === null || !this.isGamePeer(peerId)) {
+        this.cancelPageReload();
+        return;
+      }
       const now = Date.now();
       if (this.state.pageReloadSuspendedUntil > now) {
         this.cancelPageReload();
@@ -5971,6 +5983,7 @@
           if (store === "raw") {
             if (this.rawRecoveryInFlight && Date.now() - this.rawRecoveryStartedAt < RAW_RECOVERY_WATCHDOG_MS) {
               this.noteWriteFailure(error, store);
+              this.stashDiagnostics(items);
               return;
             }
             this.rawRecoveryInFlight = true;
@@ -5982,6 +5995,7 @@
             } catch (retryError) {
               this.rawQuotaKeep = Math.max(1e3, Math.floor(this.rawQuotaKeep / 2));
               this.noteWriteFailure(retryError, "raw");
+              this.stashDiagnostics(items);
             } finally {
               this.rawRecoveryInFlight = false;
             }
@@ -6016,6 +6030,46 @@
         store,
         message: error instanceof Error ? `${error.name}: ${error.message}` : String(error)
       });
+    }
+    /**
+     * Диагностика (события logAuto), чья запись в raw не прошла, — в
+     * localStorage: разбор пауз не должен зависеть от здоровья raw-стора.
+     * Хранятся только авто-события (мелкие), не дампы ответов API.
+     */
+    stashDiagnostics(items) {
+      const diagnostics = items.filter((item) => item.source === "auto" && item.kind === "auto");
+      if (diagnostics.length === 0) return;
+      try {
+        const raw = localStorage.getItem(DIAG_BUFFER_KEY);
+        const buffer = raw !== null ? JSON.parse(raw) : [];
+        for (const record of diagnostics) {
+          buffer.push({ ts: record.ts, payload: record.payload });
+        }
+        while (buffer.length > DIAG_BUFFER_CAP) buffer.shift();
+        localStorage.setItem(DIAG_BUFFER_KEY, JSON.stringify(buffer));
+      } catch {
+      }
+    }
+    /** Переложить буфер диагностики из localStorage в базу (зовётся из init). */
+    relogStashedDiagnostics() {
+      let buffer = [];
+      try {
+        const raw = localStorage.getItem(DIAG_BUFFER_KEY);
+        if (raw === null) return;
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) buffer = parsed;
+      } catch {
+        return;
+      }
+      if (buffer.length === 0) return;
+      for (const entry of buffer) {
+        const payload = typeof entry.payload === "object" && entry.payload !== null ? entry.payload : {};
+        this.logAuto({ ...payload, ts: entry.ts, stashed: true });
+      }
+      try {
+        localStorage.removeItem(DIAG_BUFFER_KEY);
+      } catch {
+      }
     }
     /**
      * Счётчики панели пересчитываются не чаще раза в COUNT_REFRESH_MS и только
@@ -6411,7 +6465,7 @@
       };
       if (true) {
         const versionEl = shadow.querySelector(".version");
-        if (versionEl) versionEl.textContent = "0.3.261110.1233";
+        if (versionEl) versionEl.textContent = "0.3.261111.0259";
       }
       this.elements.toggle.addEventListener("click", () => actions.onToggleRecording());
       this.elements.updateReload.addEventListener("click", () => {
@@ -7224,7 +7278,7 @@
     const start = async () => {
       try {
         if (typeof console !== "undefined" && console.info) {
-          console.info(`[Stalker Assistant] v${"0.3.261110.1233"} started`);
+          console.info(`[Stalker Assistant] v${"0.3.261111.0259"} started`);
         }
         runtime.panel = new Panel({
           onToggleRecording: () => {
