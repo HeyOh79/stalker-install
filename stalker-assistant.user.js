@@ -1,7 +1,7 @@
 /* ==UserScript==
 // @name         Stalker Assistant
 // @namespace    local.stalker-assistant
-// @version      0.3.261112.0017
+// @version      0.3.261112.0501
 // @description  Сбор событий, клавиатур и решений в игре «Сталкер» (VK)
 // @match        https://vk.com/*
 // @match        https://vk.ru/*
@@ -1108,6 +1108,7 @@
   }
 
   // src/core/advice.ts
+  var ENTRY_SCREEN_RE = /Перед глазами аномалия/u;
   var FISHING_TASK_TTL_MS = 2e4;
   function isExpiredFishingAdvice(advice, now = Date.now()) {
     return (advice.kind === "label" || advice.kind === "color" || advice.kind === "icon") && now - advice.ts > FISHING_TASK_TTL_MS;
@@ -1161,6 +1162,12 @@
   }
   function findHealButton(keyboard) {
     return flattenButtons(keyboard).find((button) => /^➕?\s*Лечени/iu.test(button.text)) ?? null;
+  }
+  function entryBypassAdvice(typeName, away, note, ts) {
+    if (away !== null) {
+      return { kind: "anomaly", title: `\u041D\u0430\u0436\u043C\u0438 \xAB${away.text.trim()}\xBB`, note, button: away, ts };
+    }
+    return { kind: "anomaly", title: "\u0410\u043D\u043E\u043C\u0430\u043B\u0438\u044F: \u043E\u0431\u0445\u043E\u0434\u0438\u043C", note: `${note} \u0416\u0434\u0451\u043C \u043A\u043D\u043E\u043F\u043A\u0443 \xAB\u0423\u0439\u0442\u0438\xBB.`, button: null, hold: true, ts };
   }
   function anomalyAdvice(keyboard, text, ts, state, events, exitWish, typeRules, limits, bolts) {
     const buttons = flattenButtons(keyboard);
@@ -1250,80 +1257,73 @@
         ts
       };
     }
-    const enter = byText("\u043E\u0441\u043C\u043E\u0442\u0440\u0435\u0442\u044C \u0430\u043D\u043E\u043C\u0430\u043B\u0438\u044E");
-    if (enter !== null) {
+    if (ENTRY_SCREEN_RE.test(text)) {
       const typeName = entryAnomalyName(text);
       const typeAction = typeName !== null ? typeRules?.[typeName] : void 0;
       const away = byText("\u0443\u0439\u0442\u0438");
       if (limits !== null && limits !== void 0 && limits.personal === 0 && limits.bonus === 0) {
-        if (away === null) return null;
-        return {
-          kind: "anomaly",
-          title: `\u041D\u0430\u0436\u043C\u0438 \xAB${away.text.trim()}\xBB`,
-          note: `\xAB${typeName ?? "\u0430\u043D\u043E\u043C\u0430\u043B\u0438\u044F"}\xBB: \u041B\u0438\u0447\u043D\u044B\u0439 (0) \u0438 \u0414\u043E\u043F. (0) \u2014 \u0431\u0440\u0430\u0442\u044C \u0432 \u043F\u043E\u043B\u0435 \u043D\u0435\u0447\u0435\u0433\u043E, \u043E\u0431\u0445\u043E\u0434\u0438\u043C.`,
-          button: away,
-          ts
-        };
+        return entryBypassAdvice(typeName, away, `\xAB${typeName ?? "\u0430\u043D\u043E\u043C\u0430\u043B\u0438\u044F"}\xBB: \u041B\u0438\u0447\u043D\u044B\u0439 (0) \u0438 \u0414\u043E\u043F. (0) \u2014 \u0431\u0440\u0430\u0442\u044C \u0432 \u043F\u043E\u043B\u0435 \u043D\u0435\u0447\u0435\u0433\u043E, \u043E\u0431\u0445\u043E\u0434\u0438\u043C.`, ts);
       }
       const boltsKnown = bolts?.count ?? null;
       const entryPaused = bolts?.locked === true || boltsKnown !== null && boltsKnown < ANOMALY_MIN_BOLTS_TO_ENTER;
       if (entryPaused) {
-        if (away === null) return null;
-        return {
-          kind: "anomaly",
-          title: `\u041D\u0430\u0436\u043C\u0438 \xAB${away.text.trim()}\xBB`,
-          note: bolts?.locked === true ? "\u0410\u043D\u043E\u043C\u0430\u043B\u0438\u0438 \u043F\u0440\u0438\u043E\u0441\u0442\u0430\u043D\u043E\u0432\u043B\u0435\u043D\u044B: \u0432 \u043F\u0440\u043E\u0448\u043B\u044B\u0439 \u0440\u0430\u0437 \u0431\u043E\u043B\u0442\u043E\u0432 \u0431\u044B\u043B\u043E \u043C\u0435\u043D\u044C\u0448\u0435 \u043F\u043E\u0440\u043E\u0433\u0430. \u0412\u043E\u0437\u043E\u0431\u043D\u043E\u0432\u0438\u0442\u044C: \u041F\u0440\u0430\u0432\u0438\u043B\u0430 \u2192 \u0421\u043E\u0431\u044B\u0442\u0438\u044F \u2192 \xAB\u0410\u043D\u043E\u043C\u0430\u043B\u0438\u044F\xBB \u2192 \xAB\u0417\u0430\u0445\u043E\u0434\u0438\u0442\u044C\xBB." : `\u0411\u043E\u043B\u0442\u043E\u0432 ${boltsKnown} < ${ANOMALY_MIN_BOLTS_TO_ENTER} \u2014 \u043D\u0430 \u043F\u0440\u043E\u0445\u043E\u0436\u0434\u0435\u043D\u0438\u0435 \u043C\u043E\u0436\u0435\u0442 \u043D\u0435 \u0445\u0432\u0430\u0442\u0438\u0442\u044C. \u041D\u043E\u0432\u044B\u0435 \u0430\u043D\u043E\u043C\u0430\u043B\u0438\u0438 \u043F\u0440\u0438\u043E\u0441\u0442\u0430\u043D\u043E\u0432\u043B\u0435\u043D\u044B (\u0432\u043E\u0437\u043E\u0431\u043D\u043E\u0432\u0438\u0442\u044C: \u041F\u0440\u0430\u0432\u0438\u043B\u0430 \u2192 \u0421\u043E\u0431\u044B\u0442\u0438\u044F \u2192 \xAB\u0417\u0430\u0445\u043E\u0434\u0438\u0442\u044C\xBB).`,
-          button: away,
+        return entryBypassAdvice(
+          typeName,
+          away,
+          bolts?.locked === true ? "\u0410\u043D\u043E\u043C\u0430\u043B\u0438\u0438 \u043F\u0440\u0438\u043E\u0441\u0442\u0430\u043D\u043E\u0432\u043B\u0435\u043D\u044B: \u0432 \u043F\u0440\u043E\u0448\u043B\u044B\u0439 \u0440\u0430\u0437 \u0431\u043E\u043B\u0442\u043E\u0432 \u0431\u044B\u043B\u043E \u043C\u0435\u043D\u044C\u0448\u0435 \u043F\u043E\u0440\u043E\u0433\u0430. \u0412\u043E\u0437\u043E\u0431\u043D\u043E\u0432\u0438\u0442\u044C: \u041F\u0440\u0430\u0432\u0438\u043B\u0430 \u2192 \u0421\u043E\u0431\u044B\u0442\u0438\u044F \u2192 \xAB\u0410\u043D\u043E\u043C\u0430\u043B\u0438\u044F\xBB \u2192 \xAB\u0417\u0430\u0445\u043E\u0434\u0438\u0442\u044C\xBB." : `\u0411\u043E\u043B\u0442\u043E\u0432 ${boltsKnown} < ${ANOMALY_MIN_BOLTS_TO_ENTER} \u2014 \u043D\u0430 \u043F\u0440\u043E\u0445\u043E\u0436\u0434\u0435\u043D\u0438\u0435 \u043C\u043E\u0436\u0435\u0442 \u043D\u0435 \u0445\u0432\u0430\u0442\u0438\u0442\u044C. \u041D\u043E\u0432\u044B\u0435 \u0430\u043D\u043E\u043C\u0430\u043B\u0438\u0438 \u043F\u0440\u0438\u043E\u0441\u0442\u0430\u043D\u043E\u0432\u043B\u0435\u043D\u044B (\u0432\u043E\u0437\u043E\u0431\u043D\u043E\u0432\u0438\u0442\u044C: \u041F\u0440\u0430\u0432\u0438\u043B\u0430 \u2192 \u0421\u043E\u0431\u044B\u0442\u0438\u044F \u2192 \xAB\u0417\u0430\u0445\u043E\u0434\u0438\u0442\u044C\xBB).`,
           ts
-        };
+        );
       }
-      if (typeAction === "skip") {
-        if (away === null) return null;
-        return {
-          kind: "anomaly",
-          title: `\u041D\u0430\u0436\u043C\u0438 \xAB${away.text.trim()}\xBB`,
-          note: `\xAB${typeName}\xBB: \u043E\u0431\u0445\u043E\u0434\u0438\u043C \u043F\u043E \u0441\u043F\u0438\u0441\u043A\u0443 \u0430\u043D\u043E\u043C\u0430\u043B\u0438\u0439.`,
-          button: away,
-          ts
-        };
-      }
-      if (typeAction === "enter") {
+      const enter = byText("\u043E\u0441\u043C\u043E\u0442\u0440\u0435\u0442\u044C \u0430\u043D\u043E\u043C\u0430\u043B\u0438\u044E");
+      if (enter !== null) {
+        if (typeAction === "skip") {
+          if (away === null) return null;
+          return {
+            kind: "anomaly",
+            title: `\u041D\u0430\u0436\u043C\u0438 \xAB${away.text.trim()}\xBB`,
+            note: `\xAB${typeName}\xBB: \u043E\u0431\u0445\u043E\u0434\u0438\u043C \u043F\u043E \u0441\u043F\u0438\u0441\u043A\u0443 \u0430\u043D\u043E\u043C\u0430\u043B\u0438\u0439.`,
+            button: away,
+            ts
+          };
+        }
+        if (typeAction === "enter") {
+          return {
+            kind: "anomaly",
+            title: `\u041D\u0430\u0436\u043C\u0438 \xAB${enter.text.trim()}\xBB`,
+            note: `\xAB${typeName}\xBB: \u0437\u0430\u0445\u043E\u0434\u0438\u043C \u043F\u043E \u0441\u043F\u0438\u0441\u043A\u0443 \u0430\u043D\u043E\u043C\u0430\u043B\u0438\u0439.`,
+            button: enter,
+            ts
+          };
+        }
+        const action = events?.anomaly ?? "enter";
+        if (action === "skip") {
+          if (away === null) return null;
+          return {
+            kind: "anomaly",
+            title: `\u041D\u0430\u0436\u043C\u0438 \xAB${away.text.trim()}\xBB`,
+            note: "\u0410\u043D\u043E\u043C\u0430\u043B\u0438\u044F: \u043E\u0431\u0445\u043E\u0434\u0438\u043C \u043F\u043E \u043D\u0430\u0441\u0442\u0440\u043E\u0439\u043A\u0435 \u0441\u043E\u0431\u044B\u0442\u0438\u044F.",
+            button: away,
+            ts
+          };
+        }
+        if (action === "ask") {
+          return {
+            kind: "anomaly",
+            title: "\u0410\u043D\u043E\u043C\u0430\u043B\u0438\u044F: \u0442\u0432\u043E\u0451 \u0440\u0435\u0448\u0435\u043D\u0438\u0435",
+            note: "\u041D\u0430\u0441\u0442\u0440\u043E\u0439\u043A\u0430 \u0441\u043E\u0431\u044B\u0442\u0438\u044F \xAB\u0421\u043F\u0440\u0430\u0448\u0438\u0432\u0430\u0442\u044C\xBB: \u0430\u0432\u0442\u043E \u043D\u0435 \u0436\u043C\u0451\u0442 \u2014 \u0437\u0430\u0445\u043E\u0434\u0438 \u0438\u043B\u0438 \u0443\u0445\u043E\u0434\u0438 \u0441\u0430\u043C.",
+            button: null,
+            hold: true,
+            ts
+          };
+        }
         return {
           kind: "anomaly",
           title: `\u041D\u0430\u0436\u043C\u0438 \xAB${enter.text.trim()}\xBB`,
-          note: `\xAB${typeName}\xBB: \u0437\u0430\u0445\u043E\u0434\u0438\u043C \u043F\u043E \u0441\u043F\u0438\u0441\u043A\u0443 \u0430\u043D\u043E\u043C\u0430\u043B\u0438\u0439.`,
+          note: "\u0417\u0430\u0445\u043E\u0434\u0438\u043C \u0432 \u0430\u043D\u043E\u043C\u0430\u043B\u0438\u044E: \u0446\u0435\u043B\u044C \u0441\u043E\u0431\u044B\u0442\u0438\u044F \u2014 \u0430\u0440\u0442\u0435\u0444\u0430\u043A\u0442.",
           button: enter,
           ts
         };
       }
-      const action = events?.anomaly ?? "enter";
-      if (action === "skip") {
-        if (away === null) return null;
-        return {
-          kind: "anomaly",
-          title: `\u041D\u0430\u0436\u043C\u0438 \xAB${away.text.trim()}\xBB`,
-          note: "\u0410\u043D\u043E\u043C\u0430\u043B\u0438\u044F: \u043E\u0431\u0445\u043E\u0434\u0438\u043C \u043F\u043E \u043D\u0430\u0441\u0442\u0440\u043E\u0439\u043A\u0435 \u0441\u043E\u0431\u044B\u0442\u0438\u044F.",
-          button: away,
-          ts
-        };
-      }
-      if (action === "ask") {
-        return {
-          kind: "anomaly",
-          title: "\u0410\u043D\u043E\u043C\u0430\u043B\u0438\u044F: \u0442\u0432\u043E\u0451 \u0440\u0435\u0448\u0435\u043D\u0438\u0435",
-          note: "\u041D\u0430\u0441\u0442\u0440\u043E\u0439\u043A\u0430 \u0441\u043E\u0431\u044B\u0442\u0438\u044F \xAB\u0421\u043F\u0440\u0430\u0448\u0438\u0432\u0430\u0442\u044C\xBB: \u0430\u0432\u0442\u043E \u043D\u0435 \u0436\u043C\u0451\u0442 \u2014 \u0437\u0430\u0445\u043E\u0434\u0438 \u0438\u043B\u0438 \u0443\u0445\u043E\u0434\u0438 \u0441\u0430\u043C.",
-          button: null,
-          hold: true,
-          ts
-        };
-      }
-      return {
-        kind: "anomaly",
-        title: `\u041D\u0430\u0436\u043C\u0438 \xAB${enter.text.trim()}\xBB`,
-        note: "\u0417\u0430\u0445\u043E\u0434\u0438\u043C \u0432 \u0430\u043D\u043E\u043C\u0430\u043B\u0438\u044E: \u0446\u0435\u043B\u044C \u0441\u043E\u0431\u044B\u0442\u0438\u044F \u2014 \u0430\u0440\u0442\u0435\u0444\u0430\u043A\u0442.",
-        button: enter,
-        ts
-      };
     }
     const circleStep = byText("\u0448\u0430\u0433\u043D\u0443\u0442\u044C \u0432 \u043A\u0440\u0443\u0433");
     if (circleStep !== null) {
@@ -1616,8 +1616,31 @@
   }
   function buildAdvice(input, options) {
     const { keyboard, ts } = input;
-    const text = input.text.replace(/^Загружается(?:\.\.\.|…)\s*/u, "");
+    const rawText = input.text.replace(/^Загружается(?:\.\.\.|…)\s*/u, "");
+    const text = rawText;
     if (!keyboard) {
+      if (ENTRY_SCREEN_RE.test(input.text)) {
+        const limits = options?.anomalyLimits ?? null;
+        const bolts = options?.anomalyBolts ?? null;
+        const boltsKnown = bolts?.count ?? null;
+        const typeName = entryAnomalyName(input.text);
+        if (limits !== null && limits.personal === 0 && limits.bonus === 0) {
+          return entryBypassAdvice(
+            typeName,
+            null,
+            `\xAB${typeName ?? "\u0430\u043D\u043E\u043C\u0430\u043B\u0438\u044F"}\xBB: \u041B\u0438\u0447\u043D\u044B\u0439 (0) \u0438 \u0414\u043E\u043F. (0) \u2014 \u0431\u0440\u0430\u0442\u044C \u0432 \u043F\u043E\u043B\u0435 \u043D\u0435\u0447\u0435\u0433\u043E, \u043E\u0431\u0445\u043E\u0434\u0438\u043C.`,
+            ts
+          );
+        }
+        if (bolts?.locked === true || boltsKnown !== null && boltsKnown < ANOMALY_MIN_BOLTS_TO_ENTER) {
+          return entryBypassAdvice(
+            typeName,
+            null,
+            bolts?.locked === true ? "\u0410\u043D\u043E\u043C\u0430\u043B\u0438\u0438 \u043F\u0440\u0438\u043E\u0441\u0442\u0430\u043D\u043E\u0432\u043B\u0435\u043D\u044B: \u0432 \u043F\u0440\u043E\u0448\u043B\u044B\u0439 \u0440\u0430\u0437 \u0431\u043E\u043B\u0442\u043E\u0432 \u0431\u044B\u043B\u043E \u043C\u0435\u043D\u044C\u0448\u0435 \u043F\u043E\u0440\u043E\u0433\u0430. \u0412\u043E\u0437\u043E\u0431\u043D\u043E\u0432\u0438\u0442\u044C: \u041F\u0440\u0430\u0432\u0438\u043B\u0430 \u2192 \u0421\u043E\u0431\u044B\u0442\u0438\u044F \u2192 \xAB\u0410\u043D\u043E\u043C\u0430\u043B\u0438\u044F\xBB \u2192 \xAB\u0417\u0430\u0445\u043E\u0434\u0438\u0442\u044C\xBB." : `\u0411\u043E\u043B\u0442\u043E\u0432 ${boltsKnown} < ${ANOMALY_MIN_BOLTS_TO_ENTER} \u2014 \u043D\u0430 \u043F\u0440\u043E\u0445\u043E\u0436\u0434\u0435\u043D\u0438\u0435 \u043C\u043E\u0436\u0435\u0442 \u043D\u0435 \u0445\u0432\u0430\u0442\u0438\u0442\u044C. \u041D\u043E\u0432\u044B\u0435 \u0430\u043D\u043E\u043C\u0430\u043B\u0438\u0438 \u043F\u0440\u0438\u043E\u0441\u0442\u0430\u043D\u043E\u0432\u043B\u0435\u043D\u044B (\u0432\u043E\u0437\u043E\u0431\u043D\u043E\u0432\u0438\u0442\u044C: \u041F\u0440\u0430\u0432\u0438\u043B\u0430 \u2192 \u0421\u043E\u0431\u044B\u0442\u0438\u044F \u2192 \xAB\u0417\u0430\u0445\u043E\u0434\u0438\u0442\u044C\xBB).`,
+            ts
+          );
+        }
+      }
       if (enabledOf(options, "battle") && BATTLE_TEXT_RE.test(text)) {
         return {
           kind: "battle",
@@ -4971,7 +4994,7 @@
       } catch {
         return;
       }
-      const local = "0.3.261112.0017";
+      const local = "0.3.261112.0501";
       if (remote === null || !isNewerVersion(remote, local)) return;
       const firstNotice = this.state.updateAvailable?.remote !== remote;
       this.state.updateAvailable = { remote, local };
@@ -6695,7 +6718,7 @@
       };
       if (true) {
         const versionEl = shadow.querySelector(".version");
-        if (versionEl) versionEl.textContent = "0.3.261112.0017";
+        if (versionEl) versionEl.textContent = "0.3.261112.0501";
       }
       this.elements.toggle.addEventListener("click", () => actions.onToggleRecording());
       this.elements.updateReload.addEventListener("click", () => {
@@ -7514,7 +7537,7 @@
     const start = async () => {
       try {
         if (typeof console !== "undefined" && console.info) {
-          console.info(`[Stalker Assistant] v${"0.3.261112.0017"} started`);
+          console.info(`[Stalker Assistant] v${"0.3.261112.0501"} started`);
         }
         runtime.panel = new Panel({
           onToggleRecording: () => {
