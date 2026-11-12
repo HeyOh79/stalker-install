@@ -1,7 +1,7 @@
 /* ==UserScript==
 // @name         Stalker Assistant
 // @namespace    local.stalker-assistant
-// @version      0.3.261112.0501
+// @version      0.3.261112.0912
 // @description  Сбор событий, клавиатур и решений в игре «Сталкер» (VK)
 // @match        https://vk.com/*
 // @match        https://vk.ru/*
@@ -3467,6 +3467,18 @@
     return true;
   }
 
+  // src/core/stuck.ts
+  var STUCK_CYCLE_AFTER_MS = 12e3;
+  var STUCK_RELOAD_AFTER_MS = 6e4;
+  var STUCK_RELOAD_MIN_INTERVAL_MS = 3 * 6e4;
+  function stuckLadderAction(input) {
+    if (input.stuckMs === null) return "none";
+    if (input.stuckMs < STUCK_CYCLE_AFTER_MS) return "none";
+    if (input.cycles < 2 && input.stuckMs < STUCK_RELOAD_AFTER_MS) return "cycle";
+    if (input.stuckMs >= STUCK_RELOAD_AFTER_MS && input.now - input.lastReloadAt >= STUCK_RELOAD_MIN_INTERVAL_MS) return "reload";
+    return "none";
+  }
+
   // src/vk/scroll.ts
   var FLOW_SELECTORS = [".ConvoHistory__flow", "[data-itemkey]", ".im-mess"];
   var BOTTOM_EPSILON_PX = 80;
@@ -3758,6 +3770,11 @@
     lastColorMissLogAt = 0;
     /** Перемонтажи клавиатуры при молчании игры в поле аномалии (сброс — свежее сообщение). */
     anomalyStuckCycles = /* @__PURE__ */ new Map();
+    /** Зависшая клавиатура (кнопки-спиннеры): с какого момента и сколько циклов
+     * сворачивания сделано — лестница реагирования (см. core/stuck.ts). */
+    stuckKeyboardSince = null;
+    stuckKeyboardCycles = 0;
+    lastStuckReloadAt = 0;
     /** Троттлинг панельного предупреждения «игра не отвечает — обнови страницу». */
     lastAnomalyStuckNoteAt = 0;
     /** Подпись и время последнего авто-события (дедуп одинаковых соседних логов). */
@@ -4863,15 +4880,43 @@
           return;
         }
       }
-      if (this.state.mode === "auto" && hasStuckLoadingButton() && Date.now() - this.lastKeyboardReloadAt > KEYBOARD_RELOAD_MIN_INTERVAL_MS) {
-        try {
-          if (cycleComposerKeyboard()) {
-            this.lastKeyboardReloadAt = Date.now();
-            this.logAuto({ event: "keyboard-reload", inline: keyboard.inline, source: "periodic" });
-            return;
+      const stuckNow = this.state.mode === "auto" && !document.hidden && hasStuckLoadingButton();
+      if (this.stuckKeyboardSince !== null && !stuckNow) {
+        this.logAuto({ event: "keyboard-stuck", state: "recovered", stuckMs: Date.now() - this.stuckKeyboardSince });
+        this.stuckKeyboardSince = null;
+        this.stuckKeyboardCycles = 0;
+      }
+      if (stuckNow && this.stuckKeyboardSince === null) {
+        this.stuckKeyboardSince = Date.now();
+        this.logAuto({ event: "keyboard-stuck", state: "noticed" });
+      }
+      if (stuckNow && this.stuckKeyboardSince !== null) {
+        const stuckMs = Date.now() - this.stuckKeyboardSince;
+        const ladder = stuckLadderAction({
+          stuckMs,
+          cycles: this.stuckKeyboardCycles,
+          lastReloadAt: this.lastStuckReloadAt,
+          now: Date.now()
+        });
+        if (ladder === "cycle" && Date.now() - this.lastKeyboardReloadAt > KEYBOARD_RELOAD_MIN_INTERVAL_MS) {
+          try {
+            if (cycleComposerKeyboard()) {
+              this.stuckKeyboardCycles++;
+              this.lastKeyboardReloadAt = Date.now();
+              this.logAuto({ event: "keyboard-reload", inline: keyboard.inline, source: "periodic", stage: `cycle-${this.stuckKeyboardCycles}`, stuckMs });
+              return;
+            }
+          } catch (error) {
+            this.reportError(error, "\u043F\u0435\u0440\u0435\u0437\u0430\u0433\u0440\u0443\u0437\u043A\u0430 \u043A\u043B\u0430\u0432\u0438\u0430\u0442\u0443\u0440\u044B");
           }
-        } catch (error) {
-          this.reportError(error, "\u043F\u0435\u0440\u0435\u0437\u0430\u0433\u0440\u0443\u0437\u043A\u0430 \u043A\u043B\u0430\u0432\u0438\u0430\u0442\u0443\u0440\u044B");
+        } else if (ladder === "reload") {
+          this.lastStuckReloadAt = Date.now();
+          this.stuckKeyboardSince = null;
+          this.stuckKeyboardCycles = 0;
+          this.reportError(new Error("\u043A\u043B\u0430\u0432\u0438\u0430\u0442\u0443\u0440\u0430 \u0437\u0430\u0432\u0438\u0441\u043B\u0430 \u0432 \u0437\u0430\u0433\u0440\u0443\u0437\u043A\u0435 \u2014 \u043F\u0435\u0440\u0435\u0437\u0430\u0433\u0440\u0443\u0436\u0430\u044E \u0441\u0442\u0440\u0430\u043D\u0438\u0446\u0443, \u043A\u043D\u043E\u043F\u043A\u0438 \u043F\u0435\u0440\u0435\u043F\u043E\u0434\u043D\u0438\u043C\u0443\u0442\u0441\u044F"), "\u0437\u0430\u0432\u0438\u0441\u0448\u0438\u0435 \u043A\u043D\u043E\u043F\u043A\u0438");
+          this.logAuto({ event: "keyboard-stuck", state: "reload", stuckMs });
+          void this.executePageReload();
+          return;
         }
       }
       if (keyboard.inline) this.lastInlineKeyboard.delete(peerId);
@@ -4994,7 +5039,7 @@
       } catch {
         return;
       }
-      const local = "0.3.261112.0501";
+      const local = "0.3.261112.0912";
       if (remote === null || !isNewerVersion(remote, local)) return;
       const firstNotice = this.state.updateAvailable?.remote !== remote;
       this.state.updateAvailable = { remote, local };
@@ -6718,7 +6763,7 @@
       };
       if (true) {
         const versionEl = shadow.querySelector(".version");
-        if (versionEl) versionEl.textContent = "0.3.261112.0501";
+        if (versionEl) versionEl.textContent = "0.3.261112.0912";
       }
       this.elements.toggle.addEventListener("click", () => actions.onToggleRecording());
       this.elements.updateReload.addEventListener("click", () => {
@@ -7537,7 +7582,7 @@
     const start = async () => {
       try {
         if (typeof console !== "undefined" && console.info) {
-          console.info(`[Stalker Assistant] v${"0.3.261112.0501"} started`);
+          console.info(`[Stalker Assistant] v${"0.3.261112.0912"} started`);
         }
         runtime.panel = new Panel({
           onToggleRecording: () => {
