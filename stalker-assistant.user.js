@@ -1,7 +1,7 @@
 /* ==UserScript==
 // @name         Stalker Assistant
 // @namespace    local.stalker-assistant
-// @version      0.3.261112.1017
+// @version      0.3.261112.1110
 // @description  Сбор событий, клавиатур и решений в игре «Сталкер» (VK)
 // @match        https://vk.com/*
 // @match        https://vk.ru/*
@@ -3530,6 +3530,205 @@
     }
   }
 
+  // src/core/map.ts
+  var MAP_NODES = [
+    { name: "\u0422\u043E\u0447\u043A\u0430 \u044D\u0432\u0430\u043A\u0443\u0430\u0446\u0438\u0438", x: 481, y: 10, color: "#b678e0" },
+    { name: "\u0411\u0443\u043D\u043A\u0435\u0440", x: 468, y: 48, color: "#3f7fd6" },
+    { name: "\u0417\u0430\u0432\u043E\u0434\u0441\u043A\u043E\u0439 \u0421\u043A\u043B\u0430\u0434 (\u041F\u0440\u043E\u0434\u043E\u043B\u0436\u0435\u043D\u0438\u0435 \u0412\u043E\u0441\u0442\u043E\u043A\u0430)", x: 556, y: 52, color: "#3f7fd6" },
+    { name: "\u0412\u044B\u0441\u043E\u043A\u043E\u0432\u043E\u043B\u044C\u0442\u043A\u0430", x: 212, y: 100, color: "#8fd05a" },
+    { name: "\u041F\u0440\u043E\u043C\u0435\u0436\u0443\u0442\u043E\u043A \u0412\u043E\u0441\u0442\u043E\u043A\u0430", x: 272, y: 102, color: "#3f7fd6" },
+    { name: "\u0421\u0433\u043E\u0440\u0435\u0432\u0448\u0438\u0439 \u0446\u0435\u0445", x: 330, y: 98, color: "#3f7fd6" },
+    { name: "\u0421\u043A\u0440\u044B\u0442\u043E\u0435 \u043F\u043E\u043B\u0435", x: 385, y: 100, color: "#3f7fd6" },
+    { name: "\u0422\u0440\u043E\u043F\u0430 \u043D\u0430 \u0421\u0432\u0430\u043B\u043E\u0447\u043D\u044B\u0439 \u0441\u043A\u043B\u043E\u043D", x: 438, y: 108, color: "#e0c04a" },
+    { name: "\u0422\u0440\u043E\u043F\u0430 \u043D\u0430 \u0412\u044B\u0431\u0440\u043E\u0441", x: 487, y: 108, color: "#3f7fd6" },
+    { name: "\u0411\u043E\u043B\u043E\u0442\u043E", x: 140, y: 153, color: "#e0c04a" },
+    { name: "\u0421\u043A\u0440\u044B\u0442\u0430\u044F \u043F\u043E\u043B\u044F\u043D\u0430", x: 385, y: 155, color: "#3f7fd6" },
+    { name: "\u041E\u0431\u043E\u0447\u0438\u043D\u0430 \u0443 \u0432\u044B\u0448\u043A\u0438", x: 462, y: 155, color: "#3f7fd6" },
+    { name: "\u0420\u0430\u0434\u043E\u043D", x: 520, y: 152, color: "#3f7fd6" },
+    { name: "\u0422\u043E\u0447\u043A\u0430 \u0432\u0445\u043E\u0434\u0430", x: 90, y: 215, color: "#8fd05a" },
+    { name: "\u041E\u0431\u043E\u0447\u0438\u043D\u0430 \u0434\u043E\u0440\u043E\u0433\u0438", x: 122, y: 220, color: "#3f7fd6" },
+    { name: "\u041B\u0430\u0433\u0435\u0440\u044C \u0424\u043E\u0440\u0435\u0441\u0442\u0430", x: 185, y: 198, color: "#e0c04a" },
+    { name: "\u0421\u0413-\u0426\u0435\u0445", x: 210, y: 194, color: "#e08a3a" },
+    { name: "\u0413\u043E\u043B\u0443\u0431\u043E\u0439 \u043B\u0430\u0431\u0438\u0440\u0438\u043D\u0442", x: 240, y: 193, color: "#8fd05a" },
+    { name: "\u0417\u0430\u0442\u043E\u043F\u043B\u0435\u043D\u043D\u044B\u0439 \u0446\u0435\u0445", x: 265, y: 200, color: "#3f7fd6" },
+    { name: "\u0420\u0430\u0434\u0438\u043E\u0443\u0437\u0435\u043B", x: 305, y: 205, color: "#3f7fd6" },
+    { name: "\u0414\u043E\u0440\u043E\u0433\u0430 \u0443 \u0432\u044B\u0448\u043A\u0438", x: 355, y: 220, color: "#3f7fd6" },
+    { name: "\u0416\u0430\u0440\u043A\u0430", x: 350, y: 228, color: "#e0c04a" },
+    { name: "\u041E\u0431\u043E\u0447\u0438\u043D\u0430 \u0443 \u043A\u043E\u0440\u0438\u0434\u043E\u0440\u043E\u0432", x: 395, y: 250, color: "#3f7fd6" },
+    { name: "\u041E\u043F\u0430\u0441\u043D\u043E\u0435 \u0443 \u043A\u043E\u0440\u0438\u0434\u043E\u0440\u043E\u0432", x: 430, y: 245, color: "#3f7fd6" },
+    { name: "\u041E\u0431\u043E\u0447\u0438\u043D\u0430 \u0443 \u0440\u0430\u0434\u0438\u043E\u0432\u044B\u0448\u043A\u0438", x: 460, y: 200, color: "#3f7fd6" },
+    { name: "\u0420\u0430\u0434\u0438\u043E\u0430\u043A\u0442\u0438\u0432\u043D\u0430\u044F \u0440\u043E\u0449\u0430 \u0432 \u043B\u0435\u0441\u0443", x: 520, y: 200, color: "#3f7fd6" },
+    { name: "\u0420\u043E\u0449\u0430 \u0443 \u043A\u0430\u043D\u0430\u043B\u0430", x: 520, y: 240, color: "#3f7fd6" },
+    { name: "\u0414\u043E\u0440\u043E\u0433\u0430 \u043A \u0434\u043E\u043C\u0430\u043C", x: 520, y: 272, color: "#3f7fd6" },
+    { name: "\u0410\u0432\u0442\u043E\u0441\u0435\u0440\u0432\u0438\u0441", x: 520, y: 290, color: "#3f7fd6" },
+    { name: "\u0422\u043E\u0447\u043A\u0430 \u0443 \u0437\u0430\u0431\u0440\u043E\u0448\u0435\u043D\u043D\u043E\u0439 \u0446\u0438\u0441\u0442\u0435\u0440\u043D\u044B", x: 122, y: 248, color: "#3f7fd6" },
+    { name: "\u041C\u0435\u0445\u0430\u043D\u0438\u0447\u0435\u0441\u043A\u0430\u044F \u043C\u0435\u043B\u044C\u043D\u0438\u0446\u0430", x: 175, y: 230, color: "#3f7fd6" },
+    { name: "\u0417\u0430\u0431\u0440\u043E\u0448\u0435\u043D\u043D\u044B\u0439 \u0434\u043E\u043C", x: 315, y: 295, color: "#3f7fd6" },
+    { name: "\u0412\u043E\u0434\u043E\u043A\u0430\u043D\u0430\u043B", x: 350, y: 300, color: "#3f7fd6" },
+    { name: "\u0417\u0430\u0431\u0440\u043E\u0448\u0435\u043D\u043D\u044B\u0439 \u0446\u0435\u0445", x: 205, y: 287, color: "#8fd05a" },
+    { name: "\u0421\u043A\u043B\u0430\u0434\u0441\u043A\u0430\u044F \u043F\u0430\u043B\u0430\u0442\u043A\u0430", x: 235, y: 300, color: "#8fd05a" },
+    { name: "\u0420\u0430\u0434\u0438\u043E\u0430\u043A\u0442\u0438\u0432\u043D\u044B\u0439 \u0440\u0443\u0447\u0435\u0439", x: 270, y: 302, color: "#3f7fd6" },
+    { name: "\u0420\u0436\u0430\u0432\u0430\u044F \u0432\u044B\u0448\u043A\u0430", x: 215, y: 335, color: "#8fd05a" },
+    { name: "\u0421\u0432\u0430\u043B\u043A\u0430 \u0440\u0436\u0430\u0432\u044B\u0445 \u0431\u043E\u0447\u0435\u043A", x: 245, y: 335, color: "#8fd05a" },
+    { name: "\u041D\u0430\u0441\u043E\u0441\u043D\u0430\u044F \u0441\u0442\u0430\u043D\u0446\u0438\u044F", x: 330, y: 335, color: "#3f7fd6" },
+    { name: "\u041E\u0431\u0445\u043E\u0434\u043D\u043E\u0439 \u043F\u0443\u0442\u044C", x: 90, y: 330, color: "#3f7fd6" },
+    { name: "\u0421\u0432\u0430\u043B\u043A\u0430 \u0431\u043E\u0447\u0435\u043A", x: 125, y: 365, color: "#3f7fd6" },
+    { name: "\u0422\u0430\u0439\u043D\u044B\u0435 \u0442\u0440\u043E\u043F\u044B \u0432 \u0437\u0430\u0440\u043E\u0441\u043B\u044F\u0445", x: 160, y: 360, color: "#8fd05a" },
+    { name: "\u0412\u0445\u043E\u0434 \u0432 \u0410\u0417\u0421", x: 435, y: 380, color: "#8fd05a" },
+    { name: "\u0410\u0417\u0421 \u0411-4", x: 475, y: 405, color: "#3f7fd6" },
+    { name: "\u0421\u0432\u0430\u043B\u043A\u0430 \u0441\u0442\u0430\u0440\u044B\u0445 \u0431\u043E\u0447\u0435\u043A", x: 300, y: 395, color: "#3f7fd6" },
+    { name: "\u0426\u0435\u0445 \u0441 \u0410\u0417\u0421", x: 350, y: 400, color: "#3f7fd6" },
+    { name: "\u0412\u0445\u043E\u0434 \u0432 \u0437\u0430\u0431\u0440\u043E\u0448\u0435\u043D\u043D\u044B\u0439 \u0441\u043A\u043B\u0430\u0434", x: 200, y: 455, color: "#3f7fd6" },
+    { name: "\u0422\u0430\u0439\u043D\u044B\u0435 \u0442\u0440\u043E\u043F\u044B \u0432 \u043F\u043E\u0434\u0437\u0435\u043C\u043A\u0435", x: 245, y: 455, color: "#3f7fd6" },
+    // Локации из логов игры (не видны на скриншоте, но подтверждены «Локация: X»):
+    { name: "\u0421\u043C\u043E\u0442\u0440\u043E\u0432\u0430\u044F \u0432\u044B\u0448\u043A\u0430", x: 60, y: 240, color: "#8fd05a" },
+    { name: "\u0421\u0442\u0430\u0440\u0430\u044F \u0446\u0435\u0440\u043A\u043E\u0432\u044C", x: 30, y: 275, color: "#3f7fd6" },
+    { name: "\u041B\u0430\u0433\u0435\u0440\u044C \u043A\u043B\u0430\u0434\u043E\u0438\u0441\u043A\u0430\u0442\u0435\u043B\u0435\u0439", x: 30, y: 310, color: "#8fd05a" },
+    { name: "\u0422\u0430\u0439\u043D\u044B\u0439 \u0432\u044B\u0445\u043E\u0434 \u043A \u043F\u043E\u043B\u044E", x: 30, y: 345, color: "#3f7fd6" }
+  ];
+  var MAP_EDGES = [
+    ["\u0412\u044B\u0441\u043E\u043A\u043E\u0432\u043E\u043B\u044C\u0442\u043A\u0430", "\u0411\u043E\u043B\u043E\u0442\u043E"],
+    ["\u0412\u044B\u0441\u043E\u043A\u043E\u0432\u043E\u043B\u044C\u0442\u043A\u0430", "\u041F\u0440\u043E\u043C\u0435\u0436\u0443\u0442\u043E\u043A \u0412\u043E\u0441\u0442\u043E\u043A\u0430"],
+    ["\u041F\u0440\u043E\u043C\u0435\u0436\u0443\u0442\u043E\u043A \u0412\u043E\u0441\u0442\u043E\u043A\u0430", "\u0421\u0433\u043E\u0440\u0435\u0432\u0448\u0438\u0439 \u0446\u0435\u0445"],
+    ["\u041F\u0440\u043E\u043C\u0435\u0436\u0443\u0442\u043E\u043A \u0412\u043E\u0441\u0442\u043E\u043A\u0430", "\u0421\u043A\u0440\u044B\u0442\u043E\u0435 \u043F\u043E\u043B\u0435"],
+    ["\u0421\u0433\u043E\u0440\u0435\u0432\u0448\u0438\u0439 \u0446\u0435\u0445", "\u0421\u043A\u0440\u044B\u0442\u043E\u0435 \u043F\u043E\u043B\u0435"],
+    ["\u0421\u043A\u0440\u044B\u0442\u043E\u0435 \u043F\u043E\u043B\u0435", "\u0422\u0440\u043E\u043F\u0430 \u043D\u0430 \u0421\u0432\u0430\u043B\u043E\u0447\u043D\u044B\u0439 \u0441\u043A\u043B\u043E\u043D"],
+    ["\u0421\u043A\u0440\u044B\u0442\u043E\u0435 \u043F\u043E\u043B\u0435", "\u0414\u043E\u0440\u043E\u0433\u0430 \u0443 \u0432\u044B\u0448\u043A\u0438"],
+    ["\u0422\u0440\u043E\u043F\u0430 \u043D\u0430 \u0421\u0432\u0430\u043B\u043E\u0447\u043D\u044B\u0439 \u0441\u043A\u043B\u043E\u043D", "\u0422\u0440\u043E\u043F\u0430 \u043D\u0430 \u0412\u044B\u0431\u0440\u043E\u0441"],
+    ["\u0422\u0440\u043E\u043F\u0430 \u043D\u0430 \u0412\u044B\u0431\u0440\u043E\u0441", "\u041E\u0431\u043E\u0447\u0438\u043D\u0430 \u0443 \u0440\u0430\u0434\u0438\u043E\u0432\u044B\u0448\u043A\u0438"],
+    ["\u0422\u0440\u043E\u043F\u0430 \u043D\u0430 \u0412\u044B\u0431\u0440\u043E\u0441", "\u0411\u0443\u043D\u043A\u0435\u0440"],
+    ["\u0411\u0443\u043D\u043A\u0435\u0440", "\u0422\u043E\u0447\u043A\u0430 \u044D\u0432\u0430\u043A\u0443\u0430\u0446\u0438\u0438"],
+    ["\u0411\u0443\u043D\u043A\u0435\u0440", "\u0417\u0430\u0432\u043E\u0434\u0441\u043A\u043E\u0439 \u0421\u043A\u043B\u0430\u0434 (\u041F\u0440\u043E\u0434\u043E\u043B\u0436\u0435\u043D\u0438\u0435 \u0412\u043E\u0441\u0442\u043E\u043A\u0430)"],
+    ["\u041E\u0431\u043E\u0447\u0438\u043D\u0430 \u0443 \u0440\u0430\u0434\u0438\u043E\u0432\u044B\u0448\u043A\u0438", "\u0420\u0430\u0434\u043E\u043D"],
+    ["\u0420\u0430\u0434\u043E\u043D", "\u0420\u0430\u0434\u0438\u043E\u0430\u043A\u0442\u0438\u0432\u043D\u0430\u044F \u0440\u043E\u0449\u0430 \u0432 \u043B\u0435\u0441\u0443"],
+    ["\u0420\u0430\u0434\u0438\u043E\u0430\u043A\u0442\u0438\u0432\u043D\u0430\u044F \u0440\u043E\u0449\u0430 \u0432 \u043B\u0435\u0441\u0443", "\u0420\u043E\u0449\u0430 \u0443 \u043A\u0430\u043D\u0430\u043B\u0430"],
+    ["\u0420\u0430\u0434\u0438\u043E\u0430\u043A\u0442\u0438\u0432\u043D\u0430\u044F \u0440\u043E\u0449\u0430 \u0432 \u043B\u0435\u0441\u0443", "\u0417\u0430\u0432\u043E\u0434\u0441\u043A\u043E\u0439 \u0421\u043A\u043B\u0430\u0434 (\u041F\u0440\u043E\u0434\u043E\u043B\u0436\u0435\u043D\u0438\u0435 \u0412\u043E\u0441\u0442\u043E\u043A\u0430)"],
+    ["\u0420\u043E\u0449\u0430 \u0443 \u043A\u0430\u043D\u0430\u043B\u0430", "\u0414\u043E\u0440\u043E\u0433\u0430 \u043A \u0434\u043E\u043C\u0430\u043C"],
+    ["\u0414\u043E\u0440\u043E\u0433\u0430 \u043A \u0434\u043E\u043C\u0430\u043C", "\u0410\u0432\u0442\u043E\u0441\u0435\u0440\u0432\u0438\u0441"],
+    ["\u0411\u043E\u043B\u043E\u0442\u043E", "\u041B\u0430\u0433\u0435\u0440\u044C \u0424\u043E\u0440\u0435\u0441\u0442\u0430"],
+    ["\u041B\u0430\u0433\u0435\u0440\u044C \u0424\u043E\u0440\u0435\u0441\u0442\u0430", "\u0421\u0413-\u0426\u0435\u0445"],
+    ["\u041B\u0430\u0433\u0435\u0440\u044C \u0424\u043E\u0440\u0435\u0441\u0442\u0430", "\u0412\u044B\u0441\u043E\u043A\u043E\u0432\u043E\u043B\u044C\u0442\u043A\u0430"],
+    ["\u0421\u0413-\u0426\u0435\u0445", "\u0413\u043E\u043B\u0443\u0431\u043E\u0439 \u043B\u0430\u0431\u0438\u0440\u0438\u043D\u0442"],
+    ["\u0421\u0413-\u0426\u0435\u0445", "\u0417\u0430\u0442\u043E\u043F\u043B\u0435\u043D\u043D\u044B\u0439 \u0446\u0435\u0445"],
+    ["\u0421\u0413-\u0426\u0435\u0445", "\u041C\u0435\u0445\u0430\u043D\u0438\u0447\u0435\u0441\u043A\u0430\u044F \u043C\u0435\u043B\u044C\u043D\u0438\u0446\u0430"],
+    ["\u0413\u043E\u043B\u0443\u0431\u043E\u0439 \u043B\u0430\u0431\u0438\u0440\u0438\u043D\u0442", "\u0417\u0430\u0442\u043E\u043F\u043B\u0435\u043D\u043D\u044B\u0439 \u0446\u0435\u0445"],
+    ["\u0420\u0430\u0434\u0438\u043E\u0443\u0437\u0435\u043B", "\u0417\u0430\u0442\u043E\u043F\u043B\u0435\u043D\u043D\u044B\u0439 \u0446\u0435\u0445"],
+    ["\u0420\u0430\u0434\u0438\u043E\u0443\u0437\u0435\u043B", "\u0414\u043E\u0440\u043E\u0433\u0430 \u0443 \u0432\u044B\u0448\u043A\u0438"],
+    ["\u0414\u043E\u0440\u043E\u0433\u0430 \u0443 \u0432\u044B\u0448\u043A\u0438", "\u041E\u0431\u043E\u0447\u0438\u043D\u0430 \u0443 \u043A\u043E\u0440\u0438\u0434\u043E\u0440\u043E\u0432"],
+    ["\u0414\u043E\u0440\u043E\u0433\u0430 \u0443 \u0432\u044B\u0448\u043A\u0438", "\u0421\u043A\u0440\u044B\u0442\u0430\u044F \u043F\u043E\u043B\u044F\u043D\u0430"],
+    ["\u041E\u0431\u043E\u0447\u0438\u043D\u0430 \u0443 \u043A\u043E\u0440\u0438\u0434\u043E\u0440\u043E\u0432", "\u041E\u043F\u0430\u0441\u043D\u043E\u0435 \u0443 \u043A\u043E\u0440\u0438\u0434\u043E\u0440\u043E\u0432"],
+    ["\u041E\u0431\u043E\u0447\u0438\u043D\u0430 \u0443 \u043A\u043E\u0440\u0438\u0434\u043E\u0440\u043E\u0432", "\u0421\u0432\u0430\u043B\u043A\u0430 \u0441\u0442\u0430\u0440\u044B\u0445 \u0431\u043E\u0447\u0435\u043A"],
+    ["\u041E\u043F\u0430\u0441\u043D\u043E\u0435 \u0443 \u043A\u043E\u0440\u0438\u0434\u043E\u0440\u043E\u0432", "\u0412\u0445\u043E\u0434 \u0432 \u0410\u0417\u0421"],
+    ["\u041E\u0431\u043E\u0447\u0438\u043D\u0430 \u0443 \u0440\u0430\u0434\u0438\u043E\u0432\u044B\u0448\u043A\u0438", "\u041E\u0431\u043E\u0447\u0438\u043D\u0430 \u0443 \u0432\u044B\u0448\u043A\u0438"],
+    ["\u041E\u0431\u043E\u0447\u0438\u043D\u0430 \u0443 \u0432\u044B\u0448\u043A\u0438", "\u0414\u043E\u0440\u043E\u0433\u0430 \u043A \u0434\u043E\u043C\u0430\u043C"],
+    ["\u0422\u043E\u0447\u043A\u0430 \u0432\u0445\u043E\u0434\u0430", "\u041E\u0431\u043E\u0447\u0438\u043D\u0430 \u0434\u043E\u0440\u043E\u0433\u0438"],
+    ["\u041E\u0431\u043E\u0447\u0438\u043D\u0430 \u0434\u043E\u0440\u043E\u0433\u0438", "\u0422\u043E\u0447\u043A\u0430 \u0443 \u0437\u0430\u0431\u0440\u043E\u0448\u0435\u043D\u043D\u043E\u0439 \u0446\u0438\u0441\u0442\u0435\u0440\u043D\u044B"],
+    ["\u041E\u0431\u043E\u0447\u0438\u043D\u0430 \u0434\u043E\u0440\u043E\u0433\u0438", "\u041C\u0435\u0445\u0430\u043D\u0438\u0447\u0435\u0441\u043A\u0430\u044F \u043C\u0435\u043B\u044C\u043D\u0438\u0446\u0430"],
+    ["\u0422\u043E\u0447\u043A\u0430 \u0432\u0445\u043E\u0434\u0430", "\u041E\u0431\u0445\u043E\u0434\u043D\u043E\u0439 \u043F\u0443\u0442\u044C"],
+    ["\u041E\u0431\u0445\u043E\u0434\u043D\u043E\u0439 \u043F\u0443\u0442\u044C", "\u0421\u0432\u0430\u043B\u043A\u0430 \u0431\u043E\u0447\u0435\u043A"],
+    ["\u0421\u0432\u0430\u043B\u043A\u0430 \u0431\u043E\u0447\u0435\u043A", "\u0422\u0430\u0439\u043D\u044B\u0435 \u0442\u0440\u043E\u043F\u044B \u0432 \u0437\u0430\u0440\u043E\u0441\u043B\u044F\u0445"],
+    ["\u0421\u0432\u0430\u043B\u043A\u0430 \u0431\u043E\u0447\u0435\u043A", "\u0421\u0432\u0430\u043B\u043A\u0430 \u0440\u0436\u0430\u0432\u044B\u0445 \u0431\u043E\u0447\u0435\u043A"],
+    ["\u0422\u0430\u0439\u043D\u044B\u0435 \u0442\u0440\u043E\u043F\u044B \u0432 \u0437\u0430\u0440\u043E\u0441\u043B\u044F\u0445", "\u0420\u0436\u0430\u0432\u0430\u044F \u0432\u044B\u0448\u043A\u0430"],
+    ["\u0420\u0436\u0430\u0432\u0430\u044F \u0432\u044B\u0448\u043A\u0430", "\u0421\u0432\u0430\u043B\u043A\u0430 \u0440\u0436\u0430\u0432\u044B\u0445 \u0431\u043E\u0447\u0435\u043A"],
+    ["\u0420\u0436\u0430\u0432\u0430\u044F \u0432\u044B\u0448\u043A\u0430", "\u0417\u0430\u0431\u0440\u043E\u0448\u0435\u043D\u043D\u044B\u0439 \u0446\u0435\u0445"],
+    ["\u0421\u0432\u0430\u043B\u043A\u0430 \u0440\u0436\u0430\u0432\u044B\u0445 \u0431\u043E\u0447\u0435\u043A", "\u041D\u0430\u0441\u043E\u0441\u043D\u0430\u044F \u0441\u0442\u0430\u043D\u0446\u0438\u044F"],
+    ["\u0422\u0430\u0439\u043D\u044B\u0435 \u0442\u0440\u043E\u043F\u044B \u0432 \u0437\u0430\u0440\u043E\u0441\u043B\u044F\u0445", "\u0412\u0445\u043E\u0434 \u0432 \u0437\u0430\u0431\u0440\u043E\u0448\u0435\u043D\u043D\u044B\u0439 \u0441\u043A\u043B\u0430\u0434"],
+    ["\u0412\u0445\u043E\u0434 \u0432 \u0437\u0430\u0431\u0440\u043E\u0448\u0435\u043D\u043D\u044B\u0439 \u0441\u043A\u043B\u0430\u0434", "\u0422\u0430\u0439\u043D\u044B\u0435 \u0442\u0440\u043E\u043F\u044B \u0432 \u043F\u043E\u0434\u0437\u0435\u043C\u043A\u0435"],
+    ["\u0417\u0430\u0431\u0440\u043E\u0448\u0435\u043D\u043D\u044B\u0439 \u0446\u0435\u0445", "\u0421\u043A\u043B\u0430\u0434\u0441\u043A\u0430\u044F \u043F\u0430\u043B\u0430\u0442\u043A\u0430"],
+    ["\u0417\u0430\u0431\u0440\u043E\u0448\u0435\u043D\u043D\u044B\u0439 \u0446\u0435\u0445", "\u041C\u0435\u0445\u0430\u043D\u0438\u0447\u0435\u0441\u043A\u0430\u044F \u043C\u0435\u043B\u044C\u043D\u0438\u0446\u0430"],
+    ["\u0421\u043A\u043B\u0430\u0434\u0441\u043A\u0430\u044F \u043F\u0430\u043B\u0430\u0442\u043A\u0430", "\u0420\u0430\u0434\u0438\u043E\u0430\u043A\u0442\u0438\u0432\u043D\u044B\u0439 \u0440\u0443\u0447\u0435\u0439"],
+    ["\u0420\u0430\u0434\u0438\u043E\u0430\u043A\u0442\u0438\u0432\u043D\u044B\u0439 \u0440\u0443\u0447\u0435\u0439", "\u0417\u0430\u0431\u0440\u043E\u0448\u0435\u043D\u043D\u044B\u0439 \u0434\u043E\u043C"],
+    ["\u0420\u0430\u0434\u0438\u043E\u0430\u043A\u0442\u0438\u0432\u043D\u044B\u0439 \u0440\u0443\u0447\u0435\u0439", "\u0421\u0432\u0430\u043B\u043A\u0430 \u0441\u0442\u0430\u0440\u044B\u0445 \u0431\u043E\u0447\u0435\u043A"],
+    ["\u0417\u0430\u0431\u0440\u043E\u0448\u0435\u043D\u043D\u044B\u0439 \u0434\u043E\u043C", "\u0412\u043E\u0434\u043E\u043A\u0430\u043D\u0430\u043B"],
+    ["\u0412\u043E\u0434\u043E\u043A\u0430\u043D\u0430\u043B", "\u041D\u0430\u0441\u043E\u0441\u043D\u0430\u044F \u0441\u0442\u0430\u043D\u0446\u0438\u044F"],
+    ["\u0412\u043E\u0434\u043E\u043A\u0430\u043D\u0430\u043B", "\u0426\u0435\u0445 \u0441 \u0410\u0417\u0421"],
+    ["\u041D\u0430\u0441\u043E\u0441\u043D\u0430\u044F \u0441\u0442\u0430\u043D\u0446\u0438\u044F", "\u0421\u0432\u0430\u043B\u043A\u0430 \u0441\u0442\u0430\u0440\u044B\u0445 \u0431\u043E\u0447\u0435\u043A"],
+    ["\u0426\u0435\u0445 \u0441 \u0410\u0417\u0421", "\u0412\u0445\u043E\u0434 \u0432 \u0410\u0417\u0421"],
+    ["\u0412\u0445\u043E\u0434 \u0432 \u0410\u0417\u0421", "\u0410\u0417\u0421 \u0411-4"],
+    ["\u0421\u043C\u043E\u0442\u0440\u043E\u0432\u0430\u044F \u0432\u044B\u0448\u043A\u0430", "\u0421\u0442\u0430\u0440\u0430\u044F \u0446\u0435\u0440\u043A\u043E\u0432\u044C"],
+    ["\u0421\u0442\u0430\u0440\u0430\u044F \u0446\u0435\u0440\u043A\u043E\u0432\u044C", "\u041B\u0430\u0433\u0435\u0440\u044C \u043A\u043B\u0430\u0434\u043E\u0438\u0441\u043A\u0430\u0442\u0435\u043B\u0435\u0439"],
+    ["\u041B\u0430\u0433\u0435\u0440\u044C \u043A\u043B\u0430\u0434\u043E\u0438\u0441\u043A\u0430\u0442\u0435\u043B\u0435\u0439", "\u0422\u0430\u0439\u043D\u044B\u0439 \u0432\u044B\u0445\u043E\u0434 \u043A \u043F\u043E\u043B\u044E"],
+    ["\u0421\u043C\u043E\u0442\u0440\u043E\u0432\u0430\u044F \u0432\u044B\u0448\u043A\u0430", "\u041E\u0431\u0445\u043E\u0434\u043D\u043E\u0439 \u043F\u0443\u0442\u044C"]
+  ];
+  function mapTravelCommand(location2) {
+    return `\u041F\u0435\u0440\u0435\u0439\u0442\u0438 \u043A ${location2}`;
+  }
+  function mapNodeByName(name) {
+    return MAP_NODES.find((node) => node.name === name) ?? null;
+  }
+  function mapNodeExists(name) {
+    return mapNodeByName(name) !== null;
+  }
+  function mapBfsPath(from, to) {
+    if (mapNodeExists(from) === false || mapNodeExists(to) === false) return null;
+    if (from === to) return [from];
+    const adjacency = /* @__PURE__ */ new Map();
+    for (const [a, b] of MAP_EDGES) {
+      if (!adjacency.has(a)) adjacency.set(a, []);
+      if (!adjacency.has(b)) adjacency.set(b, []);
+      adjacency.get(a)?.push(b);
+      adjacency.get(b)?.push(a);
+    }
+    const visited = /* @__PURE__ */ new Set([from]);
+    const queue = [{ node: from, path: [from] }];
+    while (queue.length > 0) {
+      const current = queue.shift();
+      if (current === void 0) break;
+      for (const neighbor of adjacency.get(current.node) ?? []) {
+        if (visited.has(neighbor)) continue;
+        const path = [...current.path, neighbor];
+        if (neighbor === to) return path;
+        visited.add(neighbor);
+        queue.push({ node: neighbor, path });
+      }
+    }
+    return null;
+  }
+  function mapLocationFromText(text) {
+    const match = /Локация:\s*([^\n]+)/u.exec(text);
+    return match ? (match[1] ?? "").trim() : null;
+  }
+  var MAP_STEP_RETRY_MS = 90 * 1e3;
+  var MAP_STEP_MAX_RETRIES = 1;
+  function mapTravelStart(path, now) {
+    return { path: [...path], index: 0, sentCommandAt: now, retries: 0 };
+  }
+  function mapTravelNextCommand(state) {
+    if (state.index >= state.path.length - 1) return null;
+    const next = state.path[state.index + 1];
+    return next === void 0 ? null : mapTravelCommand(next);
+  }
+  function mapTravelOnArrival(state, location2, now) {
+    const next = state.path[state.index + 1];
+    if (next === void 0 || location2 !== next) {
+      return { state, nextCommand: null, arrived: false };
+    }
+    const stepped = {
+      ...state,
+      index: state.index + 1,
+      sentCommandAt: null,
+      retries: 0
+    };
+    const command = mapTravelNextCommand(stepped);
+    return { state: stepped, nextCommand: command, arrived: stepped.index >= stepped.path.length - 1 };
+  }
+  function mapTravelTick(state, now) {
+    if (state.index >= state.path.length - 1 || state.sentCommandAt === null) {
+      return { state, resend: null, abort: false };
+    }
+    const waiting = now - state.sentCommandAt;
+    if (waiting < MAP_STEP_RETRY_MS) return { state, resend: null, abort: false };
+    if (state.retries < MAP_STEP_MAX_RETRIES) {
+      const command = mapTravelNextCommand(state);
+      return {
+        state: { ...state, sentCommandAt: now, retries: state.retries + 1 },
+        resend: command,
+        abort: false
+      };
+    }
+    return { state, resend: null, abort: true };
+  }
+
   // src/core/invasion.ts
   var INVASION_LOCATIONS = [
     "\u0421\u043C\u043E\u0442\u0440\u043E\u0432\u0430\u044F \u0432\u044B\u0448\u043A\u0430",
@@ -3761,6 +3960,8 @@
       invasionStartAt: null,
       invasionPhase: "idle",
       invasionStage: 0,
+      mapTravel: null,
+      currentLocation: null,
       autoDelays: { ...DEFAULT_AUTO_DELAYS },
       autoClicks: 0,
       autoReset: true,
@@ -3889,6 +4090,11 @@
     invasionEnabled = false;
     invasionStartAt = null;
     invasionLastStartedDay = null;
+    /** Очередь переходов по карте (BFS-маршрут с ожиданием прибытия). */
+    mapTravelState = null;
+    mapPendingCommand = null;
+    /** Текущая локация по чатам (из «Локация: X»). */
+    currentLocationByPeer = /* @__PURE__ */ new Map();
     /** Команда нашествия, ожидающая отправки (переход/вступление). */
     invasionPendingCommand = null;
     /**
@@ -4309,6 +4515,56 @@
     }
     /** Якорь старта «Нашествия»: дата-время (мс). null — дефолт 13.11.2026 19:00
      * с недельным шагом (см. core/invasion.ts). */
+    /**
+     * Карта: построить маршрут до локации и поставить в очередь команды
+     * «Перейти к N» (шаг подтверждается fresh «Локация: X»).
+     */
+    startMapTravel(target) {
+      if (this.invasionEnabled && this.invasionState.phase !== "idle" && this.invasionState.phase !== "done") {
+        this.reportError(new Error("\u041A\u0430\u0440\u0442\u0430: \u043D\u0430\u0448\u0435\u0441\u0442\u0432\u0438\u0435 \u0430\u043A\u0442\u0438\u0432\u043D\u043E \u2014 \u043C\u0430\u0440\u0448\u0440\u0443\u0442 \u043D\u0435 \u0437\u0430\u043F\u0443\u0449\u0435\u043D"), "\u043A\u0430\u0440\u0442\u0430");
+        return;
+      }
+      if (this.mapTravelState !== null) {
+        this.reportError(new Error("\u041A\u0430\u0440\u0442\u0430: \u043C\u0430\u0440\u0448\u0440\u0443\u0442 \u0443\u0436\u0435 \u0438\u0434\u0451\u0442"), "\u043A\u0430\u0440\u0442\u0430");
+        return;
+      }
+      const current = this.currentLocationByPeer.get(this.state.currentPeerId ?? 0) ?? this.currentLocationByPeer.get([...this.currentLocationByPeer.keys()][0] ?? 0) ?? null;
+      if (current === null || current === void 0) {
+        this.reportError(new Error("\u041A\u0430\u0440\u0442\u0430: \u0442\u0435\u043A\u0443\u0449\u0430\u044F \u043B\u043E\u043A\u0430\u0446\u0438\u044F \u043D\u0435\u0438\u0437\u0432\u0435\u0441\u0442\u043D\u0430 \u2014 \u043F\u043E\u0438\u0433\u0440\u0430\u0439/\u043F\u043E\u0445\u043E\u0434\u0438, \u043F\u043E\u043A\u0430 \u0438\u0433\u0440\u0430 \u043D\u0435 \u0441\u043E\u043E\u0431\u0449\u0438\u0442 \xAB\u041B\u043E\u043A\u0430\u0446\u0438\u044F: X\xBB"), "\u043A\u0430\u0440\u0442\u0430");
+        return;
+      }
+      if (current === target) {
+        this.reportError(new Error("\u041A\u0430\u0440\u0442\u0430: \u0442\u044B \u0443\u0436\u0435 \u0432 \xAB" + target + "\xBB"), "\u043A\u0430\u0440\u0442\u0430");
+        return;
+      }
+      const path = mapBfsPath(current, target);
+      if (path === null) {
+        this.reportError(new Error("\u041A\u0430\u0440\u0442\u0430: \u043F\u0443\u0442\u044C \u043D\u0435 \u043D\u0430\u0439\u0434\u0435\u043D \u0434\u043E \xAB" + target + "\xBB"), "\u043A\u0430\u0440\u0442\u0430");
+        return;
+      }
+      this.mapTravelState = mapTravelStart(path, Date.now());
+      this.syncMapTravelState();
+      const first = mapTravelNextCommand(this.mapTravelState);
+      this.mapPendingCommand = first;
+      this.state.mapTravel = { path: this.mapTravelState.path, index: this.mapTravelState.index };
+      this.logAuto({ event: "map-start", from: current, to: target, steps: path.length - 1 });
+      this.reportError(new Error("\u041A\u0430\u0440\u0442\u0430: \u0432 \xAB" + target + "\xBB \u2014 \u0448\u0430\u0433\u043E\u0432: " + (path.length - 1)), "\u043A\u0430\u0440\u0442\u0430");
+      this.evaluateAdvice();
+      if (this.state.mode === "auto") this.scheduleAuto();
+      this.panel?.update(this.state);
+    }
+    /** Карта: отменить активный маршрут. */
+    cancelMapTravel() {
+      if (this.mapTravelState === null) return;
+      const target = this.mapTravelState.path[this.mapTravelState.path.length - 1] ?? "?";
+      this.mapTravelState = null;
+      this.mapPendingCommand = null;
+      this.state.mapTravel = null;
+      this.logAuto({ event: "map-cancel", target });
+      this.evaluateAdvice();
+      if (this.state.mode === "auto") this.scheduleAuto();
+      this.panel?.update(this.state);
+    }
     async setInvasionStartAt(value) {
       this.invasionStartAt = value;
       this.state.invasionStartAt = value;
@@ -4933,6 +5189,7 @@
      * её надолго — нужно два промаха подряд.
      */
     checkKeyboardLiveness() {
+      this.tickMapTravel();
       this.maybePageReload();
       if (this.state.mode === "observe") return;
       if (this.captchaActive()) return;
@@ -5163,7 +5420,7 @@
       } catch {
         return;
       }
-      const local = "0.3.261112.1017";
+      const local = "0.3.261112.1110";
       if (remote === null || !isNewerVersion(remote, local)) return;
       const firstNotice = this.state.updateAvailable?.remote !== remote;
       this.state.updateAvailable = { remote, local };
@@ -5316,6 +5573,30 @@
      * поэтому триггер «кнопка-спиннер» и eviction их не ловили (лог 07.11
      * 12:26: три клика болта без ответа, repeat-pause, после паузы — снова).
      */
+    /** Зеркалит маршрут в состояние панели. */
+    syncMapTravelState() {
+      this.state.mapTravel = this.mapTravelState === null ? null : { path: this.mapTravelState.path, index: this.mapTravelState.index };
+    }
+    /** Тик маршрута карты: шаг без подтверждения — повтор; без ответа — отмена. */
+    tickMapTravel() {
+      if (this.mapTravelState === null) return;
+      const tick = mapTravelTick(this.mapTravelState, Date.now());
+      this.mapTravelState = tick.state;
+      this.syncMapTravelState();
+      if (tick.resend !== null) {
+        this.mapPendingCommand = tick.resend;
+        this.logAuto({ event: "map-retry", command: tick.resend, retries: this.mapTravelState.retries });
+        this.evaluateAdvice();
+        if (this.state.mode === "auto") this.scheduleAuto();
+      } else if (tick.abort) {
+        const target = this.mapTravelState.path[this.mapTravelState.path.length - 1] ?? "?";
+        this.mapTravelState = null;
+        this.mapPendingCommand = null;
+        this.reportError(new Error("\u041A\u0430\u0440\u0442\u0430: \u0438\u0433\u0440\u0430 \u043D\u0435 \u043E\u0442\u0432\u0435\u0442\u0438\u043B\u0430 \u043D\u0430 \xAB\u041F\u0435\u0440\u0435\u0439\u0442\u0438 \u043A " + target + "\xBB \u2014 \u043C\u0430\u0440\u0448\u0440\u0443\u0442 \u043E\u0442\u043C\u0435\u043D\u0451\u043D. \u041F\u0440\u043E\u0432\u0435\u0440\u044C \u043D\u0430\u0437\u0432\u0430\u043D\u0438\u0435 \u043B\u043E\u043A\u0430\u0446\u0438\u0438."), "\u043A\u0430\u0440\u0442\u0430");
+        this.evaluateAdvice();
+        this.panel?.update(this.state);
+      }
+    }
     anomalyStuckSilence(peerId) {
       if (this.state.mode !== "auto") return false;
       const advice = this.state.advice;
@@ -5454,6 +5735,28 @@
           }
           if (fresh && message.text && isFishingFlowText(message.text)) {
             this.fishingUntil = message.ts + FISHING_WINDOW_MS;
+          }
+          if (fresh && message.text && this.isGamePeer(message.peerId)) {
+            const locationName = mapLocationFromText(message.text);
+            if (locationName !== null) {
+              this.currentLocationByPeer.set(message.peerId, locationName);
+              this.state.currentLocation = locationName;
+            }
+            if (this.mapTravelState !== null && locationName !== null && message.peerId === this.state.currentPeerId) {
+              const step = mapTravelOnArrival(this.mapTravelState, locationName, Date.now());
+              this.mapTravelState = step.state;
+              this.syncMapTravelState();
+              if (step.arrived) {
+                this.mapTravelState = null;
+                this.mapPendingCommand = null;
+                this.logAuto({ event: "map-arrived", location: locationName });
+                this.reportError(new Error("\u041A\u0430\u0440\u0442\u0430: \u043F\u0440\u0438\u0431\u044B\u043B\u0438 \u2014 " + locationName), "\u043A\u0430\u0440\u0442\u0430");
+              } else if (step.nextCommand !== null) {
+                this.mapPendingCommand = step.nextCommand;
+                this.logAuto({ event: "map-step", command: step.nextCommand, step: this.mapTravelState.index + 1, total: this.mapTravelState.path.length });
+              }
+              this.panel?.update(this.state);
+            }
           }
           if (fresh && message.text) {
             const slots = parseGardenSlots(message.text);
@@ -5892,6 +6195,23 @@
           void this.runAutoClick();
         }, Math.max(0, kept2.at - Date.now()));
         this.logAuto({ event: "plan", button: command, reason: "rule", delayMs: Math.max(0, kept2.at - Date.now()), sendText: true, invasion: true });
+        return;
+      }
+      if (this.mapPendingCommand !== null && this.isChatReady()) {
+        const command = this.mapPendingCommand;
+        const kept2 = keepEarliestPlanAt(
+          { timerActive: prevTimerActive, plan: prevPlan },
+          { button: command, reason: "rule", detached: true },
+          this.state.autoDelays.other,
+          Date.now()
+        );
+        if (!kept2.reused) this.retryCount = 0;
+        this.plannedAction = { button: command, reason: "rule", detached: true, at: kept2.at, sendText: true };
+        this.state.autoPlan = { button: command, reason: "rule", at: kept2.at };
+        this.autoTimer = window.setTimeout(() => {
+          void this.runAutoClick();
+        }, Math.max(0, kept2.at - Date.now()));
+        this.logAuto({ event: "plan", button: command, reason: "rule", delayMs: Math.max(0, kept2.at - Date.now()), map: true });
         return;
       }
       if (this.state.gardenAutoSell) {
@@ -6546,6 +6866,7 @@
     actions;
     mode = "observe";
     openWindowName = null;
+    lastState = null;
     /**
      * Мемо рендера тяжёлых списков: update() приходит каждую секунду (тик
      * отслеживания чата) и на каждом батче — раньше правила и ротация
@@ -6599,6 +6920,18 @@
           color: #a0e0b8; font-size: 11px;
         }
         .blind-note.on { display: block; }
+        .modal-map { width: auto; max-width: 92vw; }
+        .map-svg { display: block; width: 620px; max-width: 86vw; background: #0d1218; border: 1px solid #223140; border-radius: 6px; }
+        .map-node { cursor: pointer; }
+        .map-node:hover circle { stroke: #ffffff; stroke-width: 2; }
+        .map-node circle { stroke-width: 1.5; }
+        .map-node.is-current circle { stroke: #ffffff; stroke-width: 2.5; }
+        .map-node.is-path circle { stroke: #ffd98a; stroke-width: 2; }
+        .map-node.is-target circle { stroke: #d78ae0; stroke-width: 2.5; }
+        .map-status { margin: 4px 0 8px; font-size: 11px; color: #d8e4ee; min-height: 14px; }
+        .map-actions { margin-top: 8px; }
+        .map-cancel { display: none; padding: 4px 8px; border: 1px solid #3a4a5a; border-radius: 6px; background: #18222c; color: #d8e4ee; font-size: 11px; cursor: pointer; }
+        .map-cancel.on { display: inline-block; }
         .invasion-editor {
           display: none; margin-top: 6px; gap: 6px; align-items: center;
         }
@@ -6784,6 +7117,7 @@
           <button class="rotation-btn small" type="button">\u0420\u043E\u0442\u0430\u0446\u0438\u044F</button>
           <button class="rules-btn small" type="button">\u041F\u0440\u0430\u0432\u0438\u043B\u0430</button>
           <button class="delays-btn small" type="button">\u0417\u0430\u0434\u0435\u0440\u0436\u043A\u0438</button>
+          <button class="map-btn small" type="button">\u041A\u0430\u0440\u0442\u0430</button>
         </div>
         <div class="actions">
           <button class="export primary" type="button">\u042D\u043A\u0441\u043F\u043E\u0440\u0442</button>
@@ -6817,6 +7151,18 @@
         <div class="section-title" style="margin-top:0">\u041F\u0430\u0443\u0437\u0430 \u043F\u0435\u0440\u0435\u0434 \u043D\u0430\u0436\u0430\u0442\u0438\u0435\u043C</div>
         <div class="delays"></div>
         <div class="hint">\u0412 \u0441\u0435\u043A\u0443\u043D\u0434\u0430\u0445, 0 \u2014 \u043D\u0430\u0436\u0438\u043C\u0430\u0442\u044C \u0441\u0440\u0430\u0437\u0443. \u041F\u0440\u0438\u043C\u0435\u043D\u044F\u0435\u0442\u0441\u044F \u0432 \u0440\u0435\u0436\u0438\u043C\u0435 \xAB\u0410\u0432\u0442\u043E\xBB.</div>
+      </div>
+      <div class="modal modal-map">
+        <div class="head">
+          <span class="title">\u041A\u0430\u0440\u0442\u0430 \u043B\u043E\u043A\u0430\u0446\u0438\u0439</span>
+          <button class="modal-close small" type="button">\u2715</button>
+        </div>
+        <div class="map-status"></div>
+        <svg class="map-svg" viewBox="0 0 667 507" xmlns="http://www.w3.org/2000/svg"></svg>
+        <div class="map-actions">
+          <button class="map-cancel" type="button">\u041E\u0442\u043C\u0435\u043D\u0438\u0442\u044C \u043F\u0443\u0442\u044C</button>
+        </div>
+        <div class="hint">\u041A\u043B\u0438\u043A\u043D\u0438 \u043F\u043E \u0438\u043A\u043E\u043D\u043A\u0435 \u043B\u043E\u043A\u0430\u0446\u0438\u0438 \u2014 \u0431\u043E\u0442 \u043F\u043E\u0441\u043B\u0435 \u0442\u0435\u043A\u0443\u0449\u0435\u0439 \u0430\u043A\u0442\u0438\u0432\u043D\u043E\u0441\u0442\u0438 \u043E\u0442\u043F\u0440\u0430\u0432\u0438\u0442 \u0432 \u0447\u0430\u0442 \xAB\u041F\u0435\u0440\u0435\u0439\u0442\u0438 \u043A \u2026\xBB \u043F\u043E \u043C\u0430\u0440\u0448\u0440\u0443\u0442\u0443 \u0438 \u0431\u0443\u0434\u0435\u0442 \u0436\u0434\u0430\u0442\u044C \u043F\u0440\u0438\u0431\u044B\u0442\u0438\u044F \u043D\u0430 \u043A\u0430\u0436\u0434\u043E\u043C \u0448\u0430\u0433\u0435. \u0411\u0435\u043B\u0430\u044F \u043E\u0431\u0432\u043E\u0434\u043A\u0430 \u2014 \u0442\u044B \u0441\u0435\u0439\u0447\u0430\u0441 \u0442\u0430\u043C; \u0436\u0451\u043B\u0442\u0430\u044F \u2014 \u043C\u0430\u0440\u0448\u0440\u0443\u0442; \u0441\u0438\u0440\u0435\u043D\u0435\u0432\u0430\u044F \u2014 \u0446\u0435\u043B\u044C.</div>
       </div>
       <div class="modal modal-rules">
         <div class="head">
@@ -6914,6 +7260,12 @@
         clearButton: get(".clear"),
         backdrop: get(".backdrop"),
         rotationButton: get(".rotation-btn"),
+        mapWindow: get(".modal-map"),
+        mapClose: get(".modal-map .modal-close"),
+        mapBtn: get(".map-btn"),
+        mapSvg: get(".map-svg"),
+        mapStatus: get(".map-status"),
+        mapCancel: get(".map-cancel"),
         rotationWindow: get(".modal-rotation"),
         rotationClose: get(".modal-rotation .modal-close"),
         rotationList: get(".rotation"),
@@ -6935,7 +7287,7 @@
       };
       if (true) {
         const versionEl = shadow.querySelector(".version");
-        if (versionEl) versionEl.textContent = "0.3.261112.1017";
+        if (versionEl) versionEl.textContent = "0.3.261112.1110";
       }
       this.elements.toggle.addEventListener("click", () => actions.onToggleRecording());
       this.elements.updateReload.addEventListener("click", () => {
@@ -6985,6 +7337,13 @@
       this.bindWindow("rotation", this.elements.rotationButton, this.elements.rotationClose);
       this.bindWindow("delays", this.elements.delaysButton, this.elements.delaysClose);
       this.bindWindow("rules", this.elements.rulesButton, this.elements.rulesClose);
+      this.bindWindow("map", this.elements.mapBtn, this.elements.mapClose);
+      this.elements.mapSvg.addEventListener("click", (event) => {
+        const target = event.target.closest("[data-node]");
+        const name = target?.getAttribute("data-node");
+        if (name !== null && name !== void 0) this.actions.onMapTravel(name);
+      });
+      this.elements.mapCancel.addEventListener("click", () => actions.onMapTravelCancel());
       this.elements.backdrop.addEventListener("click", () => this.closeWindow());
       document.addEventListener("keydown", (event) => {
         if (event.key === "Escape" && this.openWindowName !== null) this.closeWindow();
@@ -7015,13 +7374,17 @@
       this.elements.rotationWindow.classList.toggle("open", open === "rotation");
       this.elements.delaysWindow.classList.toggle("open", open === "delays");
       this.elements.rulesWindow.classList.toggle("open", open === "rules");
-      this.elements.rotationButton.classList.toggle("window-open", open === "rotation");
+      this.elements.mapWindow.classList.toggle("open", open === "map");
+      this.elements.mapBtn.classList.toggle("window-open", open === "map");
+      if (open === "map" && this.lastState !== null) this.renderMap(this.lastState);
       this.elements.delaysButton.classList.toggle("window-open", open === "delays");
       this.elements.rulesButton.classList.toggle("window-open", open === "rules");
     }
     update(state) {
+      this.lastState = state;
       const visible = state.isGameChat || state.gamePeerIds.length === 0 && state.currentPeerId !== null;
       this.elements.root.classList.toggle("hidden", !visible);
+      if (this.openWindowName === "map") this.renderMap(state);
       this.elements.gameNote.classList.toggle("on", visible && !state.isGameChat);
       if (visible && !state.isGameChat) {
         this.elements.gameNote.textContent = "\u0427\u0430\u0442 \u0438\u0433\u0440\u044B \u0435\u0449\u0451 \u043D\u0435 \u043E\u043F\u043E\u0437\u043D\u0430\u043D. \u041E\u0442\u043A\u0440\u043E\u0439 \u0434\u0438\u0430\u043B\u043E\u0433 \xAB\u0421\u0442\u0430\u043B\u043A\u0435\u0440 \u0421\u0435\u0440\u0434\u0446\u0435 \u0427\u0435\u0440\u043D\u043E\u0431\u044B\u043B\u044F\xBB \u2014 \u0430\u0441\u0441\u0438\u0441\u0442\u0435\u043D\u0442 \u0432\u043A\u043B\u044E\u0447\u0438\u0442\u0441\u044F \u0441\u0430\u043C.";
@@ -7133,6 +7496,44 @@
       }
     }
     /** Секция «События»: действия для аномалии и разлома (meta `eventRules`). */
+    /**
+     * Отрисовка интерактивной карты: рёбра (dotted), узлы (кружки цвета
+     * скриншота + подпись), подсветка текущей локации, маршрута и цели.
+     * Клик по узлу — actions.onMapTravel(name).
+     */
+    renderMap(state) {
+      const svg = this.elements.mapSvg;
+      const travel = state.mapTravel;
+      const pathNodes = travel !== null ? new Set(travel.path) : null;
+      const target = travel !== null ? travel.path[travel.path.length - 1] ?? null : null;
+      const current = state.currentLocation;
+      const lastSent = travel !== null && travel.index < travel.path.length ? travel.path[travel.index] ?? null : null;
+      const parts = [];
+      for (const [a, b] of MAP_EDGES) {
+        const nodeA = MAP_NODES.find((node) => node.name === a);
+        const nodeB = MAP_NODES.find((node) => node.name === b);
+        if (nodeA === void 0 || nodeB === void 0) continue;
+        parts.push(`<line x1="${nodeA.x}" y1="${nodeA.y}" x2="${nodeB.x}" y2="${nodeB.y}" stroke="#3a4756" stroke-width="1" stroke-dasharray="3,4" />`);
+      }
+      const onPath = (name) => {
+        if (travel !== null && name === target) return "is-target";
+        if (pathNodes !== null && pathNodes.has(name)) return "is-path";
+        if (travel === null && name === current) return "is-current";
+        if (travel !== null && name === current) return "is-current";
+        return "";
+      };
+      for (const node of MAP_NODES) {
+        const cls = ["map-node", onPath(node.name)].filter(Boolean).join(" ");
+        const isActive = node.name === current || node.name === target || node.name === lastSent;
+        const stroke = isActive ? "#ffffff" : "#223140";
+        parts.push(`<g class="${cls}" data-node="${node.name}"><circle cx="${node.x}" cy="${node.y}" r="8" fill="${node.color}" stroke="${stroke}" /><text x="${node.x}" y="${node.y + 17}" text-anchor="middle" font-size="7" fill="${isActive ? "#eef4fa" : "#8fa3b8"}">${node.name}</text></g>`);
+      }
+      svg.innerHTML = parts.join("");
+      const travelText = travel !== null ? `\u0412 \u043F\u0443\u0442\u044C: ${travel.path.join(" \u2192 ")} (\u0448\u0430\u0433 ${travel.index + 1} \u0438\u0437 ${travel.path.length - 1})` : current !== null ? `\u0422\u044B: ${current}. \u041A\u043B\u0438\u043A\u043D\u0438 \u043F\u043E \u0446\u0435\u043B\u0438 \u2014 \u0431\u043E\u0442 \u043F\u043E\u0441\u0442\u0440\u043E\u0438\u0442 \u043C\u0430\u0440\u0448\u0440\u0443\u0442 \xAB\u041F\u0435\u0440\u0435\u0439\u0442\u0438 \u043A \u2026\xBB` : "\u0422\u0435\u043A\u0443\u0449\u0430\u044F \u043B\u043E\u043A\u0430\u0446\u0438\u044F \u043D\u0435\u0438\u0437\u0432\u0435\u0441\u0442\u043D\u0430 \u2014 \u043F\u043E\u0445\u043E\u0434\u0438, \u043F\u043E\u043A\u0430 \u0438\u0433\u0440\u0430 \u043D\u0435 \u0441\u043E\u043E\u0431\u0449\u0438\u0442 \xAB\u041B\u043E\u043A\u0430\u0446\u0438\u044F: \u2026\xBB";
+      this.elements.mapStatus.textContent = travelText;
+      this.elements.mapCancel.classList.toggle("on", travel !== null);
+      void this.elements.mapSvg;
+    }
     renderEventRules(rules) {
       const json = JSON.stringify(rules);
       if (json === this.lastEventsJson) return;
@@ -7772,7 +8173,7 @@
     const start = async () => {
       try {
         if (typeof console !== "undefined" && console.info) {
-          console.info(`[Stalker Assistant] v${"0.3.261112.1017"} started`);
+          console.info(`[Stalker Assistant] v${"0.3.261112.1110"} started`);
         }
         runtime.panel = new Panel({
           onToggleRecording: () => {
@@ -7798,6 +8199,12 @@
           },
           onInvasionStartAt: (value) => {
             void runtime.setInvasionStartAt(value);
+          },
+          onMapTravel: (location2) => {
+            runtime.startMapTravel(location2);
+          },
+          onMapTravelCancel: () => {
+            runtime.cancelMapTravel();
           },
           onToggleAnomalyHpGuard: (enabled) => {
             void runtime.setAnomalyHpGuard(enabled);
