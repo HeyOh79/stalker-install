@@ -1,7 +1,7 @@
 /* ==UserScript==
 // @name         Stalker Assistant
 // @namespace    local.stalker-assistant
-// @version      0.3.261112.0912
+// @version      0.3.261112.0920
 // @description  Сбор событий, клавиатур и решений в игре «Сталкер» (VK)
 // @match        https://vk.com/*
 // @match        https://vk.ru/*
@@ -5039,7 +5039,7 @@
       } catch {
         return;
       }
-      const local = "0.3.261112.0912";
+      const local = "0.3.261112.0920";
       if (remote === null || !isNewerVersion(remote, local)) return;
       const firstNotice = this.state.updateAvailable?.remote !== remote;
       this.state.updateAvailable = { remote, local };
@@ -5296,7 +5296,7 @@
                   this.recoveryByPeer.delete(message.peerId);
                 }
               }
-              if (this.state.manualTakeover) {
+              if (this.state.manualTakeover && this.isGamePeer(message.peerId)) {
                 const ownEcho = this.decisionsByKey.has(decisionKey({
                   ts: message.ts,
                   peerId: message.peerId,
@@ -5326,7 +5326,7 @@
           }
           if (fresh && !message.out && !(message.text && isStaleKeyboardText(message.text))) {
             this.clickStreak = null;
-            this.lastGameActivityAt = Date.now();
+            if (this.isGamePeer(message.peerId)) this.lastGameActivityAt = Date.now();
           }
           if (fresh && message.text && isFishingFlowText(message.text)) {
             this.fishingUntil = message.ts + FISHING_WINDOW_MS;
@@ -5656,7 +5656,7 @@
         if (keyboardsEqual(current?.keyboard ?? null, message.keyboard)) return;
         this.lastComposerKeyboard.set(peerId, message);
         this.lastProgressAt = Date.now();
-        this.lastGameActivityAt = Date.now();
+        if (this.isGamePeer(peerId)) this.lastGameActivityAt = Date.now();
         this.clickStreak = null;
         this.logAuto({
           event: "composer-sync",
@@ -6763,7 +6763,7 @@
       };
       if (true) {
         const versionEl = shadow.querySelector(".version");
-        if (versionEl) versionEl.textContent = "0.3.261112.0912";
+        if (versionEl) versionEl.textContent = "0.3.261112.0920";
       }
       this.elements.toggle.addEventListener("click", () => actions.onToggleRecording());
       this.elements.updateReload.addEventListener("click", () => {
@@ -7582,7 +7582,7 @@
     const start = async () => {
       try {
         if (typeof console !== "undefined" && console.info) {
-          console.info(`[Stalker Assistant] v${"0.3.261112.0912"} started`);
+          console.info(`[Stalker Assistant] v${"0.3.261112.0920"} started`);
         }
         runtime.panel = new Panel({
           onToggleRecording: () => {
