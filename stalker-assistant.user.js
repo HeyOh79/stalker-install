@@ -1,7 +1,7 @@
 /* ==UserScript==
 // @name         Stalker Assistant
 // @namespace    local.stalker-assistant
-// @version      0.3.261112.0958
+// @version      0.3.261112.1017
 // @description  Сбор событий, клавиатур и решений в игре «Сталкер» (VK)
 // @match        https://vk.com/*
 // @match        https://vk.ru/*
@@ -3541,27 +3541,30 @@
   }
   var INVASION_TRAVEL_TIMEOUT_MS = 3 * 6e4;
   var INVASION_FIGHT_SILENCE_MS = 60 * 1e3;
+  var INVASION_DEFAULT_START = new Date(2026, 10, 13, 19, 0, 0, 0).getTime();
+  var INVASION_WEEK_MS = 7 * 24 * 36e5;
+  var pad2 = (value) => String(value).padStart(2, "0");
+  function invasionEffectiveStart(stored, now) {
+    let start = stored ?? INVASION_DEFAULT_START;
+    while (start + INVASION_WEEK_MS <= now) start += INVASION_WEEK_MS;
+    return start;
+  }
+  function formatInvasionStart(ts, now) {
+    const date = new Date(ts);
+    const sameYear = new Date(now).getFullYear() === date.getFullYear();
+    return pad2(date.getDate()) + "." + pad2(date.getMonth() + 1) + (sameYear ? "" : "." + date.getFullYear()) + " " + pad2(date.getHours()) + ":" + pad2(date.getMinutes());
+  }
+  function invasionDayOf(ts) {
+    return new Date(ts).setHours(0, 0, 0, 0);
+  }
+  function invasionShouldStart(enabled, storedStart, lastStartedDay, now) {
+    if (!enabled) return false;
+    const effective = invasionEffectiveStart(storedStart, now);
+    if (now < effective) return false;
+    return invasionDayOf(effective) !== lastStartedDay;
+  }
   function initialInvasionState() {
     return { phase: "idle", stage: 0, hadFight: false, lastFightAt: null, sentCommandAt: null };
-  }
-  var INVASION_START_WINDOW_MS = 60 * 6e4;
-  function invasionTimeToStart(enabled, startAt, lastStartedDay, now) {
-    if (!enabled || startAt === null) return false;
-    const match = /^(\d{1,2}):(\d{2})$/u.exec(startAt.trim());
-    if (match === null) return false;
-    const hours = Number(match[1]);
-    const minutes = Number(match[2]);
-    if (!Number.isFinite(hours) || !Number.isFinite(minutes)) return false;
-    const dayStart = new Date(now).setHours(0, 0, 0, 0);
-    const scheduled = dayStart + (hours * 60 + minutes) * 6e4;
-    if (lastStartedDay !== null && lastStartedDay === dayStart) return false;
-    const late = now - scheduled;
-    if (late < 0) return false;
-    if (late > INVASION_START_WINDOW_MS) return false;
-    return true;
-  }
-  function invasionDayOf(now) {
-    return new Date(now).setHours(0, 0, 0, 0);
   }
 
   // src/core/garden.ts
@@ -4045,7 +4048,17 @@
       this.invasionEnabled = sanitizeBoolean(await getMeta("invasionEnabled", false), false);
       this.state.invasionEnabled = this.invasionEnabled;
       const storedStartAt = await getMeta("invasionStartAt", null);
-      this.invasionStartAt = typeof storedStartAt === "string" ? storedStartAt : null;
+      if (typeof storedStartAt === "string" && /^\d{1,2}:\d{2}$/u.test(storedStartAt.trim())) {
+        const [h, m] = storedStartAt.trim().split(":").map(Number);
+        const today = /* @__PURE__ */ new Date();
+        today.setHours(h ?? 0, m ?? 0, 0, 0);
+        let ts = today.getTime();
+        while (ts <= Date.now()) ts += 7 * 24 * 36e5;
+        this.invasionStartAt = ts;
+        void setMeta("invasionStartAt", ts);
+      } else if (typeof storedStartAt === "number") {
+        this.invasionStartAt = storedStartAt;
+      }
       this.state.invasionStartAt = this.invasionStartAt;
       this.invasionLastStartedDay = await getMeta("invasionLastStartedDay", null);
       this.state.forkRules = sanitizeForkRules(await getMeta("forkRules", []));
@@ -4260,9 +4273,10 @@
       if (this.invasionPendingCommand !== null) return;
       if (!this.isGamePeer(peerId)) return;
       const now = Date.now();
-      const day = invasionDayOf(now);
+      const effective = invasionEffectiveStart(this.invasionStartAt, now);
+      const day = invasionDayOf(effective);
       if (this.invasionLastStartedDay !== null && this.invasionLastStartedDay === day) return;
-      if (!invasionTimeToStart(this.invasionEnabled, this.invasionStartAt, this.invasionLastStartedDay, now)) return;
+      if (!invasionShouldStart(this.invasionEnabled, this.invasionStartAt, this.invasionLastStartedDay, now)) return;
       this.invasionLastStartedDay = day;
       void setMeta("invasionLastStartedDay", day);
       this.invasionState = { phase: "travel", stage: 0, hadFight: false, lastFightAt: null, sentCommandAt: null };
@@ -4293,12 +4307,14 @@
       if (this.state.mode === "auto") this.scheduleAuto();
       this.panel?.update(this.state);
     }
-    /** Время старта «Нашествия» по часам компьютера: строка «ЧЧ:ММ». */
+    /** Якорь старта «Нашествия»: дата-время (мс). null — дефолт 13.11.2026 19:00
+     * с недельным шагом (см. core/invasion.ts). */
     async setInvasionStartAt(value) {
-      const clean = value === null ? null : value.trim();
-      this.invasionStartAt = clean === "" ? null : clean;
-      this.state.invasionStartAt = this.invasionStartAt;
-      await setMeta("invasionStartAt", this.invasionStartAt);
+      this.invasionStartAt = value;
+      this.state.invasionStartAt = value;
+      await setMeta("invasionStartAt", value);
+      this.evaluateAdvice();
+      if (this.state.mode === "auto") this.scheduleAuto();
       this.panel?.update(this.state);
     }
     async setAnomalyHpGuard(value) {
@@ -5147,7 +5163,7 @@
       } catch {
         return;
       }
-      const local = "0.3.261112.0958";
+      const local = "0.3.261112.1017";
       if (remote === null || !isNewerVersion(remote, local)) return;
       const firstNotice = this.state.updateAvailable?.remote !== remote;
       this.state.updateAvailable = { remote, local };
@@ -6583,6 +6599,18 @@
           color: #a0e0b8; font-size: 11px;
         }
         .blind-note.on { display: block; }
+        .invasion-editor {
+          display: none; margin-top: 6px; gap: 6px; align-items: center;
+        }
+        .invasion-editor.on { display: flex; }
+        .invasion-editor input {
+          flex: 1; padding: 4px 6px; border: 1px solid #3a4a5a; border-radius: 6px;
+          background: #10161d; color: #d8e4ee; font-size: 11px; color-scheme: dark;
+        }
+        .invasion-editor button {
+          padding: 4px 8px; border: 1px solid #3a4a5a; border-radius: 6px;
+          background: #18222c; color: #d8e4ee; font-size: 11px; cursor: pointer;
+        }
         .anomaly-note {
           display: none; margin-top: 8px; padding: 7px 8px;
           border: 1px solid #8a6a2e; border-radius: 6px; background: #2a2014;
@@ -6727,6 +6755,11 @@
         <div class="row"><span>\u041F\u0430\u0443\u0437\u0430 \u043F\u0440\u0438 \u0440\u0443\u0447\u043D\u044B\u0445 \u043D\u0430\u0436\u0430\u0442\u0438\u044F\u0445</span><button class="manual-toggle toggle" type="button" title="\u0420\u0443\u0447\u043D\u043E\u0435 \u0434\u0435\u0439\u0441\u0442\u0432\u0438\u0435 (\u043D\u0430\u0436\u0430\u0442\u0438\u0435 \u0441 \u0442\u0435\u043B\u0435\u0444\u043E\u043D\u0430 \u0438\u043B\u0438 \u043D\u0430\u0431\u043E\u0440 \u0442\u0435\u043A\u0441\u0442\u0430) \u043E\u0441\u0442\u0430\u043D\u0430\u0432\u043B\u0438\u0432\u0430\u0435\u0442 \u0430\u0432\u0442\u043E\u043D\u0430\u0436\u0430\u0442\u0438\u044F \u043D\u0430 30 \u0441 \u2014 \u0431\u043E\u0442 \u043D\u0435 \u043C\u0435\u0448\u0430\u0435\u0442 \u0438\u0433\u0440\u0430\u0442\u044C \u0440\u0443\u043A\u0430\u043C\u0438.">\u0432\u043A\u043B</button></div>
         <div class="row"><span>\u041F\u0440\u043E\u0434\u0430\u0432\u0430\u0442\u044C \u0441\u0430\u0434\u043E\u043A \u043F\u0440\u0438 \u043F\u043E\u043B\u043D\u043E\u043C</span><button class="garden-sell toggle" type="button" title="\u041A\u043E\u0433\u0434\u0430 \u0441\u0430\u0434\u043E\u043A \u043F\u043E\u043B\u043E\u043D (35/35 \u2014 \u0440\u044B\u0431\u0430 \u043E\u0442\u043F\u0443\u0441\u043A\u0430\u0435\u0442\u0441\u044F), \u0430\u0432\u0442\u043E-\u0440\u0435\u0436\u0438\u043C \u043E\u0442\u043F\u0440\u0430\u0432\u043B\u044F\u0435\u0442 \u0432 \u0447\u0430\u0442 \u043A\u043E\u043C\u0430\u043D\u0434\u044B \xAB\u041F\u0440\u043E\u0434\u0430\u0442\u044C \u0432\u0441\u044E \u0440\u044B\u0431\u0443\xBB.">\u0432\u044B\u043A\u043B</button></div>
         <div class="row"><span>\u041D\u0430\u0448\u0435\u0441\u0442\u0432\u0438\u0435</span><button class="invasion toggle" type="button" title="\u041F\u043E \u043D\u0430\u0441\u0442\u0443\u043F\u043B\u0435\u043D\u0438\u0438 \u0432\u0440\u0435\u043C\u0435\u043D\u0438 \u0441\u0442\u0430\u0440\u0442\u0430 \u0431\u043E\u0442 \u0441\u0430\u043C \u0432\u0435\u0434\u0451\u0442 \u043D\u0430\u0448\u0435\u0441\u0442\u0432\u0438\u0435 \u043F\u043E \u0442\u0440\u0451\u043C \u043B\u043E\u043A\u0430\u0446\u0438\u044F\u043C (\u0421\u043C\u043E\u0442\u0440\u043E\u0432\u0430\u044F \u0432\u044B\u0448\u043A\u0430 \u2192 \u041D\u0430\u0441\u043E\u0441\u043D\u0430\u044F \u0441\u0442\u0430\u043D\u0446\u0438\u044F \u2192 \u0421\u0442\u0430\u0440\u0430\u044F \u0426\u0435\u0440\u043A\u043E\u0432\u044C): \u0432\u0441\u0442\u0443\u043F\u0430\u0435\u0442, \u0431\u044C\u0451\u0442 \u0437\u043E\u043C\u0431\u0438 \u0440\u043E\u0442\u0430\u0446\u0438\u0435\u0439 \u0438 \u043F\u0435\u0440\u0435\u0445\u043E\u0434\u0438\u0442 \u0434\u0430\u043B\u044C\u0448\u0435.">\u0432\u044B\u043A\u043B</button><button class="invasion-time" type="button" title="\u0412\u0440\u0435\u043C\u044F \u0441\u0442\u0430\u0440\u0442\u0430 \u043D\u0430\u0448\u0435\u0441\u0442\u0432\u0438\u044F \u043F\u043E \u0447\u0430\u0441\u0430\u043C \u043A\u043E\u043C\u043F\u044C\u044E\u0442\u0435\u0440\u0430 (\u0427\u0427:\u041C\u041C). \u041A\u043B\u0438\u043A \u2014 \u0437\u0430\u0434\u0430\u0442\u044C \u0432\u0440\u0435\u043C\u044F.">\u2014</button></div>
+        <div class="invasion-editor">
+          <input class="invasion-input" type="datetime-local">
+          <button class="invasion-ok" type="button">\u041E\u041A</button>
+          <button class="invasion-reset" type="button" title="\u0412\u0435\u0440\u043D\u0443\u0442\u044C \u0432\u0440\u0435\u043C\u044F \u043F\u043E \u0443\u043C\u043E\u043B\u0447\u0430\u043D\u0438\u044E (13.11.2026 19:00, \u0434\u0430\u043B\u0435\u0435 \u0435\u0436\u0435\u043D\u0435\u0434\u0435\u043B\u044C\u043D\u043E)">\u0421\u0431\u0440\u043E\u0441</button>
+        </div>
         <div class="row"><span>\u0421\u0442\u0440\u0430\u0436 HP (\u0430\u043D\u043E\u043C\u0430\u043B\u0438\u044F)</span><button class="hp-guard toggle" type="button" title="\u0415\u0441\u043B\u0438 \u0432 \u043F\u043E\u043B\u0435 \u0430\u043D\u043E\u043C\u0430\u043B\u0438\u0438 \u0437\u0434\u043E\u0440\u043E\u0432\u044C\u0435 \u043F\u0430\u0434\u0430\u0435\u0442 \u0434\u043E 25% \u0438 \u043D\u0438\u0436\u0435, \u0430\u0432\u0442\u043E \u043F\u0435\u0440\u0435\u0441\u0442\u0430\u0451\u0442 \u0443\u0433\u043B\u0443\u0431\u043B\u044F\u0442\u044C\u0441\u044F \u0438 \u0432\u044B\u0445\u043E\u0434\u0438\u0442 \u0438\u0437 \u0430\u043D\u043E\u043C\u0430\u043B\u0438\u0438 \u2014 \u0434\u043E\u0431\u0438\u0440\u0430\u0442\u044C \u0430\u0440\u0442\u0435\u0444\u0430\u043A\u0442 \u043F\u0440\u0438 \u0442\u0430\u043A\u043E\u043C HP \u0440\u0438\u0441\u043A\u043E\u0432\u0430\u043D\u043D\u043E.">\u0432\u044B\u043A\u043B</button></div>
         <div class="row"><span>\u0427\u0430\u0442</span><b class="peer">\u2014</b></div>
         <div class="row"><span>\u0421\u0430\u0434\u043E\u043A</span><b class="garden">\u2014</b></div>
@@ -6858,6 +6891,10 @@
         gardenSell: get(".garden-sell"),
         invasion: get(".invasion"),
         invasionTime: get(".invasion-time"),
+        invasionEditor: get(".invasion-editor"),
+        invasionInput: get(".invasion-input"),
+        invasionOk: get(".invasion-ok"),
+        invasionReset: get(".invasion-reset"),
         hpGuard: get(".hp-guard"),
         peer: get(".peer"),
         garden: get(".garden"),
@@ -6898,7 +6935,7 @@
       };
       if (true) {
         const versionEl = shadow.querySelector(".version");
-        if (versionEl) versionEl.textContent = "0.3.261112.0958";
+        if (versionEl) versionEl.textContent = "0.3.261112.1017";
       }
       this.elements.toggle.addEventListener("click", () => actions.onToggleRecording());
       this.elements.updateReload.addEventListener("click", () => {
@@ -6930,8 +6967,11 @@
         actions.onInvasionToggle(this.elements.invasion.textContent !== "\u0432\u043A\u043B");
       });
       this.elements.invasionTime.addEventListener("click", () => {
-        const value = window.prompt("\u0412\u0440\u0435\u043C\u044F \u0441\u0442\u0430\u0440\u0442\u0430 \u043D\u0430\u0448\u0435\u0441\u0442\u0432\u0438\u044F (\u0427\u0427:\u041C\u041C) \u2014 \u043F\u043E \u0447\u0430\u0441\u0430\u043C \u043A\u043E\u043C\u043F\u044C\u044E\u0442\u0435\u0440\u0430:", this.elements.invasionTime.textContent === "\u2014" ? "" : this.elements.invasionTime.textContent);
-        if (value !== null) actions.onInvasionStartAt(value.trim() === "" ? null : value);
+        const raw = this.elements.invasionInput.value;
+        const ts = raw === "" ? null : new Date(raw).getTime();
+        if (raw !== "" && !Number.isFinite(ts)) return;
+        actions.onInvasionStartAt(ts);
+        this.elements.invasionEditor.classList.remove("on");
       });
       this.elements.hpGuard.addEventListener("click", () => {
         this.actions.onToggleAnomalyHpGuard(this.elements.hpGuard.textContent !== "\u0432\u043A\u043B");
@@ -7035,7 +7075,7 @@
       this.elements.gardenSell.classList.toggle("off", !state.gardenAutoSell);
       this.elements.invasion.textContent = state.invasionEnabled ? "\u0432\u043A\u043B" : "\u0432\u044B\u043A\u043B";
       this.elements.invasion.classList.toggle("off", !state.invasionEnabled);
-      this.elements.invasionTime.textContent = state.invasionStartAt ?? "\u2014";
+      this.elements.invasionTime.textContent = formatInvasionStart(invasionEffectiveStart(state.invasionStartAt, Date.now()), Date.now());
       const invasionPhaseText = { idle: "", travel: "\u043F\u0435\u0440\u0435\u0445\u043E\u0434", fight: "\u0431\u043E\u0438", done: "\u0437\u0430\u0432\u0435\u0440\u0448\u0435\u043D\u043E" };
       const phaseText = state.invasionEnabled ? invasionPhaseText[state.invasionPhase] ?? "" : "";
       const stageNames = ["\u0421\u043C\u043E\u0442\u0440\u043E\u0432\u0430\u044F \u0432\u044B\u0448\u043A\u0430", "\u041D\u0430\u0441\u043E\u0441\u043D\u0430\u044F \u0441\u0442\u0430\u043D\u0446\u0438\u044F", "\u0421\u0442\u0430\u0440\u0430\u044F \u0426\u0435\u0440\u043A\u043E\u0432\u044C"];
@@ -7732,7 +7772,7 @@
     const start = async () => {
       try {
         if (typeof console !== "undefined" && console.info) {
-          console.info(`[Stalker Assistant] v${"0.3.261112.0958"} started`);
+          console.info(`[Stalker Assistant] v${"0.3.261112.1017"} started`);
         }
         runtime.panel = new Panel({
           onToggleRecording: () => {
