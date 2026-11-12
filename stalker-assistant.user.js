@@ -1,7 +1,7 @@
 /* ==UserScript==
 // @name         Stalker Assistant
 // @namespace    local.stalker-assistant
-// @version      0.3.261112.1209
+// @version      0.3.261112.1210
 // @description  Сбор событий, клавиатур и решений в игре «Сталкер» (VK)
 // @match        https://vk.com/*
 // @match        https://vk.ru/*
@@ -5422,7 +5422,7 @@
       } catch {
         return;
       }
-      const local = "0.3.261112.1209";
+      const local = "0.3.261112.1210";
       if (remote === null || !isNewerVersion(remote, local)) return;
       const firstNotice = this.state.updateAvailable?.remote !== remote;
       this.state.updateAvailable = { remote, local };
@@ -6922,7 +6922,7 @@
           color: #a0e0b8; font-size: 11px;
         }
         .blind-note.on { display: block; }
-        .modal-map { width: min(94vw, 135vh); max-height: 94vh; overflow: hidden; }
+        .modal-map { width: min(94vw, (94vh - 150px) * 1.316); max-height: 94vh; overflow: hidden; }
         .map-svg { display: block; width: 100%; height: auto; aspect-ratio: 667 / 507; background: #0d1218; border: 1px solid #223140; border-radius: 6px; }
         .map-node { cursor: pointer; }
         .map-node:hover circle { stroke: #ffffff; stroke-width: 2; }
@@ -7289,7 +7289,7 @@
       };
       if (true) {
         const versionEl = shadow.querySelector(".version");
-        if (versionEl) versionEl.textContent = "0.3.261112.1209";
+        if (versionEl) versionEl.textContent = "0.3.261112.1210";
       }
       this.elements.toggle.addEventListener("click", () => actions.onToggleRecording());
       this.elements.updateReload.addEventListener("click", () => {
@@ -8178,7 +8178,7 @@
     const start = async () => {
       try {
         if (typeof console !== "undefined" && console.info) {
-          console.info(`[Stalker Assistant] v${"0.3.261112.1209"} started`);
+          console.info(`[Stalker Assistant] v${"0.3.261112.1210"} started`);
         }
         runtime.panel = new Panel({
           onToggleRecording: () => {
