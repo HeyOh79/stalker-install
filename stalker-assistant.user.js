@@ -1,7 +1,7 @@
 /* ==UserScript==
 // @name         Stalker Assistant
 // @namespace    local.stalker-assistant
-// @version      0.3.261111.2333
+// @version      0.3.261112.0017
 // @description  Сбор событий, клавиатур и решений в игре «Сталкер» (VK)
 // @match        https://vk.com/*
 // @match        https://vk.ru/*
@@ -307,7 +307,7 @@
       }
     }
     if (context.fishingWaiting) return null;
-    const rule = findForkRule(context.forkRules ?? [], forkSignature(keyboard));
+    const rule = context.fishing ? null : findForkRule(context.forkRules ?? [], forkSignature(keyboard));
     if (rule?.choice) {
       const target = comparable(rule.choice);
       const flat = flattenButtons(keyboard);
@@ -4971,7 +4971,7 @@
       } catch {
         return;
       }
-      const local = "0.3.261111.2333";
+      const local = "0.3.261112.0017";
       if (remote === null || !isNewerVersion(remote, local)) return;
       const firstNotice = this.state.updateAvailable?.remote !== remote;
       this.state.updateAvailable = { remote, local };
@@ -5612,12 +5612,14 @@
       if (!keyboard || this.manualChoice) return;
       if (this.state.advice) return;
       if (!isForkKeyboard(keyboard)) return;
-      if (isFishingWaitingText(this.lastBotText.get(peerId) ?? "")) return;
+      const fishingActive = Date.now() < this.fishingUntil;
+      if (fishingActive) return;
       const action = nextAutoAction(keyboard, {
         advice: this.state.advice,
         delays: this.state.autoDelays,
         manualChoice: null,
         forkRules: this.state.forkRules,
+        fishing: false,
         fishingWaiting: false
       });
       if (action) return;
@@ -5708,12 +5710,14 @@
         }
       }
       const keyboard = this.currentForkKeyboard(peerId)?.keyboard ?? null;
-      const fishingWaiting = isFishingWaitingText(this.lastBotText.get(peerId) ?? "");
+      const fishingActive = Date.now() < this.fishingUntil;
+      const fishingWaiting = fishingActive && isFishingWaitingText(this.lastBotText.get(peerId) ?? "");
       const action = nextAutoAction(keyboard, {
         advice: this.state.advice,
         delays: this.state.autoDelays,
         manualChoice: this.manualChoice,
         forkRules: this.state.forkRules,
+        fishing: fishingActive,
         fishingWaiting
       });
       if (!action) {
@@ -6691,7 +6695,7 @@
       };
       if (true) {
         const versionEl = shadow.querySelector(".version");
-        if (versionEl) versionEl.textContent = "0.3.261111.2333";
+        if (versionEl) versionEl.textContent = "0.3.261112.0017";
       }
       this.elements.toggle.addEventListener("click", () => actions.onToggleRecording());
       this.elements.updateReload.addEventListener("click", () => {
@@ -7510,7 +7514,7 @@
     const start = async () => {
       try {
         if (typeof console !== "undefined" && console.info) {
-          console.info(`[Stalker Assistant] v${"0.3.261111.2333"} started`);
+          console.info(`[Stalker Assistant] v${"0.3.261112.0017"} started`);
         }
         runtime.panel = new Panel({
           onToggleRecording: () => {
