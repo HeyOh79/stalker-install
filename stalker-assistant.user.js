@@ -1,7 +1,7 @@
 /* ==UserScript==
 // @name         Stalker Assistant
 // @namespace    local.stalker-assistant
-// @version      0.3.261112.1210
+// @version      0.3.261112.1219
 // @description  Сбор событий, клавиатур и решений в игре «Сталкер» (VK)
 // @match        https://vk.com/*
 // @match        https://vk.ru/*
@@ -5422,7 +5422,7 @@
       } catch {
         return;
       }
-      const local = "0.3.261112.1210";
+      const local = "0.3.261112.1219";
       if (remote === null || !isNewerVersion(remote, local)) return;
       const firstNotice = this.state.updateAvailable?.remote !== remote;
       this.state.updateAvailable = { remote, local };
@@ -6924,16 +6924,6 @@
         .blind-note.on { display: block; }
         .modal-map { width: min(94vw, (94vh - 150px) * 1.316); max-height: 94vh; overflow: hidden; }
         .map-svg { display: block; width: 100%; height: auto; aspect-ratio: 667 / 507; background: #0d1218; border: 1px solid #223140; border-radius: 6px; }
-        .map-node { cursor: pointer; }
-        .map-node:hover circle { stroke: #ffffff; stroke-width: 2; }
-        .map-node circle { stroke-width: 1.5; }
-        .map-node.is-current circle { stroke: #ffffff; stroke-width: 2.5; }
-        .map-node.is-path circle { stroke: #ffd98a; stroke-width: 2; }
-        .map-node.is-target circle { stroke: #d78ae0; stroke-width: 2.5; }
-        .map-status { margin: 4px 0 8px; font-size: 11px; color: #d8e4ee; min-height: 14px; }
-        .map-actions { margin-top: 8px; }
-        .map-cancel { display: none; padding: 4px 8px; border: 1px solid #3a4a5a; border-radius: 6px; background: #18222c; color: #d8e4ee; font-size: 11px; cursor: pointer; }
-        .map-cancel.on { display: inline-block; }
         .invasion-editor {
           display: none; margin-top: 6px; gap: 6px; align-items: center;
         }
@@ -6984,6 +6974,16 @@
           width: 340px; max-width: calc(100vw - 24px);
           max-height: 80vh; overflow-y: auto; box-sizing: border-box; padding: 12px 14px;
         }
+        .map-node { cursor: pointer; }
+        .map-node:hover circle { stroke: #ffffff; stroke-width: 2; }
+        .map-node circle { stroke-width: 1.5; }
+        .map-node.is-current circle { stroke: #ffffff; stroke-width: 2.5; }
+        .map-node.is-path circle { stroke: #ffd98a; stroke-width: 2; }
+        .map-node.is-target circle { stroke: #d78ae0; stroke-width: 2.5; }
+        .map-status { margin: 4px 0 8px; font-size: 11px; color: #d8e4ee; min-height: 14px; }
+        .map-actions { margin-top: 8px; }
+        .map-cancel { display: none; padding: 4px 8px; border: 1px solid #3a4a5a; border-radius: 6px; background: #18222c; color: #d8e4ee; font-size: 11px; cursor: pointer; }
+        .map-cancel.on { display: inline-block; }
         .modal.open { display: block; }
         .rule { padding: 6px 0; border-bottom: 1px solid #2a323c; }
         .rule:last-child { border-bottom: none; }
@@ -7289,7 +7289,7 @@
       };
       if (true) {
         const versionEl = shadow.querySelector(".version");
-        if (versionEl) versionEl.textContent = "0.3.261112.1210";
+        if (versionEl) versionEl.textContent = "0.3.261112.1219";
       }
       this.elements.toggle.addEventListener("click", () => actions.onToggleRecording());
       this.elements.updateReload.addEventListener("click", () => {
@@ -8178,7 +8178,7 @@
     const start = async () => {
       try {
         if (typeof console !== "undefined" && console.info) {
-          console.info(`[Stalker Assistant] v${"0.3.261112.1210"} started`);
+          console.info(`[Stalker Assistant] v${"0.3.261112.1219"} started`);
         }
         runtime.panel = new Panel({
           onToggleRecording: () => {
