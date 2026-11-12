@@ -1,7 +1,7 @@
 /* ==UserScript==
 // @name         Stalker Assistant
 // @namespace    local.stalker-assistant
-// @version      0.3.261112.1110
+// @version      0.3.261112.1204
 // @description  Сбор событий, клавиатур и решений в игре «Сталкер» (VK)
 // @match        https://vk.com/*
 // @match        https://vk.ru/*
@@ -3580,11 +3580,13 @@
     { name: "\u0426\u0435\u0445 \u0441 \u0410\u0417\u0421", x: 350, y: 400, color: "#3f7fd6" },
     { name: "\u0412\u0445\u043E\u0434 \u0432 \u0437\u0430\u0431\u0440\u043E\u0448\u0435\u043D\u043D\u044B\u0439 \u0441\u043A\u043B\u0430\u0434", x: 200, y: 455, color: "#3f7fd6" },
     { name: "\u0422\u0430\u0439\u043D\u044B\u0435 \u0442\u0440\u043E\u043F\u044B \u0432 \u043F\u043E\u0434\u0437\u0435\u043C\u043A\u0435", x: 245, y: 455, color: "#3f7fd6" },
-    // Локации из логов игры (не видны на скриншоте, но подтверждены «Локация: X»):
-    { name: "\u0421\u043C\u043E\u0442\u0440\u043E\u0432\u0430\u044F \u0432\u044B\u0448\u043A\u0430", x: 60, y: 240, color: "#8fd05a" },
-    { name: "\u0421\u0442\u0430\u0440\u0430\u044F \u0446\u0435\u0440\u043A\u043E\u0432\u044C", x: 30, y: 275, color: "#3f7fd6" },
-    { name: "\u041B\u0430\u0433\u0435\u0440\u044C \u043A\u043B\u0430\u0434\u043E\u0438\u0441\u043A\u0430\u0442\u0435\u043B\u0435\u0439", x: 30, y: 310, color: "#8fd05a" },
-    { name: "\u0422\u0430\u0439\u043D\u044B\u0439 \u0432\u044B\u0445\u043E\u0434 \u043A \u043F\u043E\u043B\u044E", x: 30, y: 345, color: "#3f7fd6" }
+    // Локации из логов игры (подтверждены «Локация: X»), НО не видны на
+    // скриншоте карты — в отрисовке модальной карты не участвуют (offMap),
+    // BFS через них работает. Позиции условные.
+    { name: "\u0421\u043C\u043E\u0442\u0440\u043E\u0432\u0430\u044F \u0432\u044B\u0448\u043A\u0430", x: 0, y: 0, color: "#8fd05a", offMap: true },
+    { name: "\u0421\u0442\u0430\u0440\u0430\u044F \u0446\u0435\u0440\u043A\u043E\u0432\u044C", x: 0, y: 0, color: "#3f7fd6", offMap: true },
+    { name: "\u041B\u0430\u0433\u0435\u0440\u044C \u043A\u043B\u0430\u0434\u043E\u0438\u0441\u043A\u0430\u0442\u0435\u043B\u0435\u0439", x: 0, y: 0, color: "#8fd05a", offMap: true },
+    { name: "\u0422\u0430\u0439\u043D\u044B\u0439 \u0432\u044B\u0445\u043E\u0434 \u043A \u043F\u043E\u043B\u044E", x: 0, y: 0, color: "#3f7fd6", offMap: true }
   ];
   var MAP_EDGES = [
     ["\u0412\u044B\u0441\u043E\u043A\u043E\u0432\u043E\u043B\u044C\u0442\u043A\u0430", "\u0411\u043E\u043B\u043E\u0442\u043E"],
@@ -5420,7 +5422,7 @@
       } catch {
         return;
       }
-      const local = "0.3.261112.1110";
+      const local = "0.3.261112.1204";
       if (remote === null || !isNewerVersion(remote, local)) return;
       const firstNotice = this.state.updateAvailable?.remote !== remote;
       this.state.updateAvailable = { remote, local };
@@ -6920,8 +6922,8 @@
           color: #a0e0b8; font-size: 11px;
         }
         .blind-note.on { display: block; }
-        .modal-map { width: auto; max-width: 92vw; }
-        .map-svg { display: block; width: 620px; max-width: 86vw; background: #0d1218; border: 1px solid #223140; border-radius: 6px; }
+        .modal-map { width: auto; max-width: 94vw; max-height: 94vh; overflow: hidden; }
+        .map-svg { display: block; height: min(74vh, 507px); width: auto; max-width: 88vw; margin: 0 auto; background: #0d1218; border: 1px solid #223140; border-radius: 6px; }
         .map-node { cursor: pointer; }
         .map-node:hover circle { stroke: #ffffff; stroke-width: 2; }
         .map-node circle { stroke-width: 1.5; }
@@ -7287,7 +7289,7 @@
       };
       if (true) {
         const versionEl = shadow.querySelector(".version");
-        if (versionEl) versionEl.textContent = "0.3.261112.1110";
+        if (versionEl) versionEl.textContent = "0.3.261112.1204";
       }
       this.elements.toggle.addEventListener("click", () => actions.onToggleRecording());
       this.elements.updateReload.addEventListener("click", () => {
@@ -7509,7 +7511,9 @@
       const current = state.currentLocation;
       const lastSent = travel !== null && travel.index < travel.path.length ? travel.path[travel.index] ?? null : null;
       const parts = [];
+      const offMap = new Set(MAP_NODES.filter((node) => node.offMap === true).map((node) => node.name));
       for (const [a, b] of MAP_EDGES) {
+        if (offMap.has(a) || offMap.has(b)) continue;
         const nodeA = MAP_NODES.find((node) => node.name === a);
         const nodeB = MAP_NODES.find((node) => node.name === b);
         if (nodeA === void 0 || nodeB === void 0) continue;
@@ -7523,6 +7527,7 @@
         return "";
       };
       for (const node of MAP_NODES) {
+        if (node.offMap === true) continue;
         const cls = ["map-node", onPath(node.name)].filter(Boolean).join(" ");
         const isActive = node.name === current || node.name === target || node.name === lastSent;
         const stroke = isActive ? "#ffffff" : "#223140";
@@ -8173,7 +8178,7 @@
     const start = async () => {
       try {
         if (typeof console !== "undefined" && console.info) {
-          console.info(`[Stalker Assistant] v${"0.3.261112.1110"} started`);
+          console.info(`[Stalker Assistant] v${"0.3.261112.1204"} started`);
         }
         runtime.panel = new Panel({
           onToggleRecording: () => {
