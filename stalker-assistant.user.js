@@ -1,7 +1,7 @@
 /* ==UserScript==
 // @name         Stalker Assistant
 // @namespace    local.stalker-assistant
-// @version      0.3.261113.1109
+// @version      0.3.261113.1120
 // @description  Сбор событий, клавиатур и решений в игре «Сталкер» (VK)
 // @match        https://vk.com/*
 // @match        https://vk.ru/*
@@ -274,6 +274,15 @@
   }
   function isContinueButtonText(text) {
     return CONTINUE_BUTTON_TEXTS.includes(comparable(text));
+  }
+  function isAnomalyExploreButton(text) {
+    return /север|юг|запад|восток|болт|обыскать/u.test(comparable(text));
+  }
+  var BLIND_ANOMALY_AFTER_MS = 120 * 1e3;
+  var BLIND_ANOMALY_MAX_CLICKS = 6;
+  var BLIND_ANOMALY_PAUSE_MS = 60 * 1e3;
+  function blindAnomalyShouldPause(exploreClicksWithoutResponse, silentMs) {
+    return silentMs >= BLIND_ANOMALY_AFTER_MS && exploreClicksWithoutResponse >= BLIND_ANOMALY_MAX_CLICKS;
   }
   function isContinueButton(button) {
     return isContinueButtonText(button.text);
@@ -4151,6 +4160,8 @@
     lastUpdateCheckAt = 0;
     /** Последняя активность ИГРЫ: свежее сообщение или смена клавиатуры. */
     lastGameActivityAt = Date.now();
+    /** Слепые клики по полю без ответа игры (защита петель, см. blind-anomaly). */
+    anomalyBlindClicks = 0;
     /** Причина запланированной перезагрузки (для заметки панели и маркера). */
     pageReloadSilentMs = 0;
     /** До этого момента авто приостановлен капчей ВК (30 с после последнего ВИДИМОГО следа). */
@@ -5608,7 +5619,7 @@
       } catch {
         return;
       }
-      const local = "0.3.261113.1109";
+      const local = "0.3.261113.1120";
       if (remote === null || !isNewerVersion(remote, local)) return;
       const firstNotice = this.state.updateAvailable?.remote !== remote;
       this.state.updateAvailable = { remote, local };
@@ -6729,6 +6740,21 @@
         this.invasionPendingCommand = null;
         this.logAuto({ event: "invasion-sent", command: planned.button, phase: this.invasionState.phase });
       }
+      if (this.state.advice?.kind === "anomaly" && isAnomalyExploreButton(planned.button)) {
+        const silentMs = Date.now() - this.lastGameActivityAt;
+        if (silentMs >= BLIND_ANOMALY_AFTER_MS) {
+          this.anomalyBlindClicks += 1;
+          if (blindAnomalyShouldPause(this.anomalyBlindClicks, silentMs)) {
+            this.anomalyBlindClicks = 0;
+            this.state.autoRepeatPauseUntil = Date.now() + BLIND_ANOMALY_PAUSE_MS;
+            this.logAuto({ event: "blind-anomaly", silentMs, pauseMs: BLIND_ANOMALY_PAUSE_MS });
+            this.cancelAutoPlan();
+            this.reportError(new Error("\u0410\u043D\u043E\u043C\u0430\u043B\u0438\u044F: \u0438\u0433\u0440\u0430 \u043C\u043E\u043B\u0447\u0438\u0442 \u043D\u0430 \u0445\u043E\u0434\u044B \u2014 \u043F\u0430\u0443\u0437\u0430 1 \u043C\u0438\u043D (\u0441\u043B\u0435\u043F\u0430\u044F \u043D\u0430\u0432\u0438\u0433\u0430\u0446\u0438\u044F)"), "\u0430\u043D\u043E\u043C\u0430\u043B\u0438\u044F");
+          }
+        } else {
+          this.anomalyBlindClicks = 0;
+        }
+      }
       if (planned.reason === "manual") this.manualChoice = null;
       if (planned.button.includes("\u0414\u0435\u0439\u0441\u0442\u0432\u0438\u044F")) {
         this.composerSyncSuppressMs = SUBMENU_SYNC_SUPPRESS_MS;
@@ -6923,8 +6949,12 @@
       const list = this.pendingWrites.get(store) ?? [];
       list.push(...items);
       if (list.length > PENDING_WRITES_CAP) {
+        const dropped = list.length - PENDING_WRITES_CAP / 2;
         list.splice(0, list.length - PENDING_WRITES_CAP / 2);
-        this.noteStorageError(new Error("pending writes overflow"), store);
+        const callbacks = this.pendingDropCallbacks.get(store) ?? [];
+        this.pendingDropCallbacks.set(store, []);
+        for (const callback of callbacks) callback();
+        this.noteWriteFailure(new Error(`pending writes overflow: \u2212${dropped}`), store);
       }
       this.pendingWrites.set(store, list);
       if (onDropped) {
@@ -7480,7 +7510,7 @@
       };
       if (true) {
         const versionEl = shadow.querySelector(".version");
-        if (versionEl) versionEl.textContent = "0.3.261113.1109";
+        if (versionEl) versionEl.textContent = "0.3.261113.1120";
       }
       this.elements.toggle.addEventListener("click", () => actions.onToggleRecording());
       this.elements.updateReload.addEventListener("click", () => {
@@ -8518,7 +8548,7 @@
       }
     };
     try {
-      const version = true ? "0.3.261113.1109" : "?";
+      const version = true ? "0.3.261113.1120" : "?";
       push({ t: Date.now(), k: "init", msg: `recorder ${version} @ ${location.host}` });
       window.addEventListener("error", (event) => {
         recordError("error", `${event.message} @${event.filename}:${event.lineno}`);
@@ -8571,7 +8601,7 @@
     const start = async () => {
       try {
         if (typeof console !== "undefined" && console.info) {
-          console.info(`[Stalker Assistant] v${"0.3.261113.1109"} started`);
+          console.info(`[Stalker Assistant] v${"0.3.261113.1120"} started`);
         }
         runtime.panel = new Panel({
           onToggleRecording: () => {
