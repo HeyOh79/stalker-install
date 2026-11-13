@@ -1,7 +1,7 @@
 /* ==UserScript==
 // @name         Stalker Assistant
 // @namespace    local.stalker-assistant
-// @version      0.3.261113.1037
+// @version      0.3.261113.1048
 // @description  Сбор событий, клавиатур и решений в игре «Сталкер» (VK)
 // @match        https://vk.com/*
 // @match        https://vk.ru/*
@@ -5568,7 +5568,7 @@
       } catch {
         return;
       }
-      const local = "0.3.261113.1037";
+      const local = "0.3.261113.1048";
       if (remote === null || !isNewerVersion(remote, local)) return;
       const firstNotice = this.state.updateAvailable?.remote !== remote;
       this.state.updateAvailable = { remote, local };
@@ -7440,7 +7440,7 @@
       };
       if (true) {
         const versionEl = shadow.querySelector(".version");
-        if (versionEl) versionEl.textContent = "0.3.261113.1037";
+        if (versionEl) versionEl.textContent = "0.3.261113.1048";
       }
       this.elements.toggle.addEventListener("click", () => actions.onToggleRecording());
       this.elements.updateReload.addEventListener("click", () => {
@@ -8163,6 +8163,32 @@
   };
 
   // src/vk/intercept.ts
+  var CLONE_READ_TIMEOUT_MS = 35e3;
+  function isStreamContentType(contentType) {
+    return /text\/event-stream|octet-stream/i.test(contentType);
+  }
+  function readClonedJson(response, onJson, onError) {
+    try {
+      const contentType = response.headers?.get?.("content-type") ?? "";
+      if (isStreamContentType(contentType)) return;
+      const clone = response.clone();
+      const timer = window.setTimeout(() => {
+        try {
+          void clone.body?.cancel();
+        } catch {
+        }
+      }, CLONE_READ_TIMEOUT_MS);
+      clone.json().then((json) => {
+        window.clearTimeout(timer);
+        onJson(json);
+      }).catch((error) => {
+        window.clearTimeout(timer);
+        onError?.(error, "fetch parse");
+      });
+    } catch (error) {
+      onError?.(error, "fetch clone");
+    }
+  }
   function installInterceptors(handlers) {
     installFetch(handlers);
     installXhr(handlers);
@@ -8179,20 +8205,21 @@
       const result = originalFetch.call(window, input, init);
       if (longPoll) {
         result.then((response) => {
-          try {
-            response.clone().json().then((json) => handlers.onLongPoll(json)).catch(() => {
-            });
-          } catch {
-          }
+          readClonedJson(
+            response,
+            (json) => handlers.onLongPoll(json),
+            () => {
+            }
+          );
         }).catch(() => {
         });
       } else if (method) {
         result.then((response) => {
-          try {
-            response.clone().json().then((json) => handlers.onApi(method, json, { url, request, source: "fetch" })).catch((error) => handlers.onError(error, `fetch parse ${method}`));
-          } catch (error) {
-            handlers.onError(error, `fetch clone ${method}`);
-          }
+          readClonedJson(
+            response,
+            (json) => handlers.onApi(method, json, { url, request, source: "fetch" }),
+            (error, context) => handlers.onError(error, `${context} ${method}`)
+          );
         }).catch(() => {
         });
       }
@@ -8380,7 +8407,7 @@
       }
     };
     try {
-      const version = true ? "0.3.261113.1037" : "?";
+      const version = true ? "0.3.261113.1048" : "?";
       push({ t: Date.now(), k: "init", msg: `recorder ${version} @ ${location.host}` });
       window.addEventListener("error", (event) => {
         recordError("error", `${event.message} @${event.filename}:${event.lineno}`);
@@ -8433,7 +8460,7 @@
     const start = async () => {
       try {
         if (typeof console !== "undefined" && console.info) {
-          console.info(`[Stalker Assistant] v${"0.3.261113.1037"} started`);
+          console.info(`[Stalker Assistant] v${"0.3.261113.1048"} started`);
         }
         runtime.panel = new Panel({
           onToggleRecording: () => {
