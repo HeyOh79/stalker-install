@@ -1,7 +1,7 @@
 /* ==UserScript==
 // @name         Stalker Assistant
 // @namespace    local.stalker-assistant
-// @version      0.3.261112.1305
+// @version      0.3.261113.0933
 // @description  Сбор событий, клавиатур и решений в игре «Сталкер» (VK)
 // @match        https://vk.com/*
 // @match        https://vk.ru/*
@@ -2575,6 +2575,13 @@
       request.onerror = () => reject(request.error ?? new Error("indexedDB count failed"));
     }));
   }
+  function countSince(storeName, ts) {
+    return getDb().then((db) => new Promise((resolve, reject) => {
+      const request = db.transaction(storeName, "readonly").objectStore(storeName).index("ts").count(IDBKeyRange.lowerBound(ts));
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error ?? new Error("indexedDB countSince failed"));
+    }));
+  }
   function getMeta(key, fallback) {
     return getDb().then((db) => new Promise((resolve, reject) => {
       const transaction = db.transaction("meta", "readonly");
@@ -3772,11 +3779,12 @@
   var INVASION_LOCATIONS = [
     "\u0421\u043C\u043E\u0442\u0440\u043E\u0432\u0430\u044F \u0432\u044B\u0448\u043A\u0430",
     "\u041D\u0430\u0441\u043E\u0441\u043D\u0430\u044F \u0441\u0442\u0430\u043D\u0446\u0438\u044F",
-    "\u0421\u0442\u0430\u0440\u0430\u044F \u0426\u0435\u0440\u043A\u043E\u0432\u044C"
+    "\u0421\u0442\u0430\u0440\u0430\u044F \u0446\u0435\u0440\u043A\u043E\u0432\u044C"
   ];
   function invasionTravelCommand(location2) {
     return `\u041F\u0435\u0440\u0435\u0439\u0442\u0438 \u0432 ${location2}`;
   }
+  var INVASION_JOIN_COMMAND = "\u0412\u0441\u0442\u0443\u043F\u0438\u0442\u044C \u0432 \u043D\u0430\u0448\u0435\u0441\u0442\u0432\u0438\u0435";
   var INVASION_TRAVEL_TIMEOUT_MS = 3 * 6e4;
   var INVASION_FIGHT_SILENCE_MS = 60 * 1e3;
   var INVASION_DEFAULT_START = new Date(2026, 10, 13, 19, 0, 0, 0).getTime();
@@ -3801,8 +3809,53 @@
     if (now < effective) return false;
     return invasionDayOf(effective) !== lastStartedDay;
   }
+  var BATTLE_MARK_RE = /Атака врага|Все враги повержены|Выбери действие|выберите действие|зомб|Зомби/u;
   function initialInvasionState() {
     return { phase: "idle", stage: 0, hadFight: false, lastFightAt: null, sentCommandAt: null };
+  }
+  function invasionLocationName(state) {
+    return INVASION_LOCATIONS[Math.min(state.stage, INVASION_LOCATIONS.length - 1)];
+  }
+  function isInvasionLocationHeader(text, location2) {
+    return text.includes(`\u041B\u043E\u043A\u0430\u0446\u0438\u044F: ${location2}`);
+  }
+  function isInvasionBattleText(text) {
+    return BATTLE_MARK_RE.test(text);
+  }
+  function invasionOnBattleMark(state, ts) {
+    if (state.phase !== "fight") return state;
+    return { ...state, hadFight: true, lastFightAt: ts };
+  }
+  function invasionOnLocationHeader(state, text, ts, now) {
+    const location2 = invasionLocationName(state);
+    const isOurLocation = isInvasionLocationHeader(text, location2);
+    const next = { ...state };
+    if (!isOurLocation) return { state: next, command: null };
+    if (next.phase === "travel") {
+      if (next.stage === 0) {
+        next.phase = "fight";
+        next.sentCommandAt = null;
+        return { state: next, command: INVASION_JOIN_COMMAND };
+      }
+      next.phase = "fight";
+      next.sentCommandAt = null;
+      return { state: next, command: null };
+    }
+    if (next.phase === "fight") {
+      if (next.hadFight && next.lastFightAt !== null && ts - next.lastFightAt >= INVASION_FIGHT_SILENCE_MS && now - next.lastFightAt >= INVASION_FIGHT_SILENCE_MS) {
+        next.hadFight = false;
+        next.lastFightAt = null;
+        if (next.stage >= INVASION_LOCATIONS.length - 1) {
+          next.phase = "done";
+          return { state: next, command: null };
+        }
+        next.stage += 1;
+        next.phase = "travel";
+        next.sentCommandAt = ts;
+        return { state: next, command: invasionTravelCommand(invasionLocationName(next)) };
+      }
+    }
+    return { state: next, command: null };
   }
 
   // src/core/garden.ts
@@ -3964,12 +4017,21 @@
   var LOG_PRUNE_INTERVAL_MS = 6 * 60 * 60 * 1e3;
   var RAW_RETENTION_MS = 7 * 24 * 60 * 60 * 1e3;
   var DATA_RETENTION_MS = 14 * 24 * 60 * 60 * 1e3;
+  var DATA_MESSAGES_KEEP_MAX = 6e4;
+  var DATA_DECISIONS_KEEP_MAX = 2e4;
+  var DATA_KEYBOARDS_KEEP_MAX = 2e4;
   var WRITE_FLUSH_MS = 400;
   var COUNT_REFRESH_MS = 5e3;
   var BATTLE_KEYBOARDS_KEEP = 200;
   var INIT_MESSAGES_WINDOW_MS = 7 * 24 * 60 * 60 * 1e3;
   var INIT_DECISIONS_WINDOW_MS = 48 * 60 * 60 * 1e3;
   var INIT_KEYBOARDS_WINDOW_MS = 48 * 60 * 60 * 1e3;
+  var INIT_MESSAGES_CAP = 2e4;
+  var INIT_KEYBOARDS_CAP = 8e3;
+  var INIT_DECISIONS_CAP = 8e3;
+  var INIT_WINDOW_MIN_MS = 60 * 60 * 1e3;
+  var SEND_TEXT_RESEND_COOLDOWN_MS = 30 * 1e3;
+  var INVASION_TRAVEL_MAX_RETRIES = 2;
   var PENDING_EVENTS_LIMIT = 200;
   var RECOVERY_TTL_MS = 3 * 60 * 1e3;
   var DEFAULT_ANOMALY_TYPES = ["\u0422\u0440\u0430\u043C\u043F\u043B\u0438\u043D", "\u041A\u0430\u0440\u0443\u0441\u0435\u043B\u044C", "\u0413\u0430\u0437\u0438\u0440\u043E\u0432\u043A\u0430"];
@@ -4136,6 +4198,8 @@
     currentLocationByPeer = /* @__PURE__ */ new Map();
     /** Команда нашествия, ожидающая отправки (переход/вступление). */
     invasionPendingCommand = null;
+    /** Сколько раз повторяли команду перехода нашествия без подтверждения. */
+    invasionTravelRetries = 0;
     /**
      * Из аномалии пора выходить (страж HP): флаг по чатам, живёт до «Вы вышли
      * из аномалии» / входа в новое поле. После подбора артефакта флаг больше
@@ -4329,10 +4393,28 @@
         }
       }
       const loadSince = Date.now();
+      const pickLoadSince = async (store, windowMs, cap) => {
+        let current = windowMs;
+        for (; ; ) {
+          const count = await countSince(store, loadSince - current);
+          if (count <= cap || current <= INIT_WINDOW_MIN_MS) {
+            if (current !== windowMs) {
+              this.logAuto({ event: "init-window", store, hours: Math.round(current / 36e5), count });
+            }
+            return loadSince - current;
+          }
+          current = Math.floor(current / 2);
+        }
+      };
+      const [messagesSince, keyboardsSince, decisionsSince] = await Promise.all([
+        pickLoadSince("messages", INIT_MESSAGES_WINDOW_MS, INIT_MESSAGES_CAP),
+        pickLoadSince("keyboards", INIT_KEYBOARDS_WINDOW_MS, INIT_KEYBOARDS_CAP),
+        pickLoadSince("decisions", INIT_DECISIONS_WINDOW_MS, INIT_DECISIONS_CAP)
+      ]);
       const [existingMessages, existingKeyboards, existingDecisions] = await Promise.all([
-        getAllSince("messages", loadSince - INIT_MESSAGES_WINDOW_MS),
-        getAllSince("keyboards", loadSince - INIT_KEYBOARDS_WINDOW_MS),
-        getAllSince("decisions", loadSince - INIT_DECISIONS_WINDOW_MS)
+        getAllSince("messages", messagesSince),
+        getAllSince("keyboards", keyboardsSince),
+        getAllSince("decisions", decisionsSince)
       ]);
       this.messageSignatures = new Set(existingMessages.map(messageSignature));
       for (const message of existingMessages) {
@@ -4410,9 +4492,18 @@
       try {
         const now = Date.now();
         const raw = await pruneStoreBefore("raw", now - RAW_RETENTION_MS);
-        const messages = await pruneStoreBefore("messages", now - DATA_RETENTION_MS);
-        const decisions = await pruneStoreBefore("decisions", now - DATA_RETENTION_MS);
-        const keyboards = await pruneStoreBefore("keyboards", now - DATA_RETENTION_MS);
+        let messages = await pruneStoreBefore("messages", now - DATA_RETENTION_MS);
+        let decisions = await pruneStoreBefore("decisions", now - DATA_RETENTION_MS);
+        let keyboards = await pruneStoreBefore("keyboards", now - DATA_RETENTION_MS);
+        if (await countStore("messages") > DATA_MESSAGES_KEEP_MAX) {
+          messages += await pruneStore("messages", DATA_MESSAGES_KEEP_MAX);
+        }
+        if (await countStore("decisions") > DATA_DECISIONS_KEEP_MAX) {
+          decisions += await pruneStore("decisions", DATA_DECISIONS_KEEP_MAX);
+        }
+        if (await countStore("keyboards") > DATA_KEYBOARDS_KEEP_MAX) {
+          keyboards += await pruneStore("keyboards", DATA_KEYBOARDS_KEEP_MAX);
+        }
         if (raw + messages + decisions + keyboards > 0) {
           this.logAuto({ event: "log-prune", raw, messages, decisions, keyboards });
           this.refreshCountsSoon();
@@ -4524,12 +4615,57 @@
       if (!invasionShouldStart(this.invasionEnabled, this.invasionStartAt, this.invasionLastStartedDay, now)) return;
       this.invasionLastStartedDay = day;
       void setMeta("invasionLastStartedDay", day);
-      this.invasionState = { phase: "travel", stage: 0, hadFight: false, lastFightAt: null, sentCommandAt: null };
-      this.state.invasionPhase = "travel";
-      this.state.invasionStage = 0;
+      this.invasionState = { phase: "travel", stage: 0, hadFight: false, lastFightAt: null, sentCommandAt: now };
+      this.syncInvasionState();
+      this.invasionTravelRetries = 0;
       this.invasionPendingCommand = invasionTravelCommand(INVASION_LOCATIONS[0]);
       this.logAuto({ event: "invasion-start", command: this.invasionPendingCommand });
       this.reportError(new Error("\u041D\u0430\u0448\u0435\u0441\u0442\u0432\u0438\u0435: \u043E\u0442\u043F\u0440\u0430\u0432\u043B\u044F\u044E \xAB\u041F\u0435\u0440\u0435\u0439\u0442\u0438 \u0432 \u0421\u043C\u043E\u0442\u0440\u043E\u0432\u0430\u044F \u0432\u044B\u0448\u043A\u0430\xBB"), "\u043D\u0430\u0448\u0435\u0441\u0442\u0432\u0438\u0435");
+      this.panel?.update(this.state);
+    }
+    /** Зеркалит фазу нашествия в состояние панели. */
+    syncInvasionState() {
+      this.state.invasionPhase = this.invasionState.phase;
+      this.state.invasionStage = this.invasionState.stage;
+    }
+    /**
+     * Ставит команду нашествия в очередь на отправку.sentCommandAt — момент
+     * взвода: по нему тик живости ловит переход без подтверждения прибытия
+     * (INVASION_TRAVEL_TIMEOUT_MS) и повторяет команду (до
+     * INVASION_TRAVEL_MAX_RETRIES), после — завершает режим.
+     */
+    armInvasionCommand(command) {
+      this.invasionPendingCommand = command;
+      this.invasionState = { ...this.invasionState, sentCommandAt: Date.now() };
+      this.syncInvasionState();
+    }
+    /**
+     * Тик таймаута перехода нашествия (в проверке живости): команда отправлена,
+     * а fresh «Локация: <имя>» не приходит — повторяем команду, после
+     * INVASION_TRAVEL_MAX_RETRIES тихих повторов завершаем режим (сегодня
+     * ретарт уже не случится — защита дня). Раньше машина состояний не была
+     * подключена к потоку сообщений вовсе: фаза навсегда оставалась travel,
+     * команда не очищалась после отправки, и бот слал «Перейти в …» каждые
+     * ~2,5 с бесконечно — шторм записей ронял вкладку по Out of Memory
+     * (13.11 19:00, первый запуск режима).
+     */
+    tickInvasionTravel() {
+      if (this.invasionState.phase !== "travel" || this.invasionPendingCommand !== null) return;
+      const sentAt = this.invasionState.sentCommandAt;
+      if (sentAt === null || Date.now() - sentAt < INVASION_TRAVEL_TIMEOUT_MS) return;
+      if (this.invasionTravelRetries >= INVASION_TRAVEL_MAX_RETRIES) {
+        this.invasionState = { ...this.invasionState, phase: "done", sentCommandAt: null };
+        this.syncInvasionState();
+        this.logAuto({ event: "invasion-timeout", stage: this.invasionState.stage, retries: this.invasionTravelRetries });
+        this.reportError(new Error("\u041D\u0430\u0448\u0435\u0441\u0442\u0432\u0438\u0435: \u0438\u0433\u0440\u0430 \u043D\u0435 \u043F\u043E\u0434\u0442\u0432\u0435\u0440\u0436\u0434\u0430\u0435\u0442 \u043F\u0435\u0440\u0435\u0445\u043E\u0434\u044B \u2014 \u0440\u0435\u0436\u0438\u043C \u043E\u0441\u0442\u0430\u043D\u043E\u0432\u043B\u0435\u043D"), "\u043D\u0430\u0448\u0435\u0441\u0442\u0432\u0438\u0435");
+        this.panel?.update(this.state);
+        return;
+      }
+      this.invasionTravelRetries += 1;
+      this.armInvasionCommand(invasionTravelCommand(invasionLocationName(this.invasionState)));
+      this.logAuto({ event: "invasion-retry", stage: this.invasionState.stage, retry: this.invasionTravelRetries });
+      this.evaluateAdvice();
+      if (this.state.mode === "auto") this.scheduleAuto();
       this.panel?.update(this.state);
     }
     /** Композер готов к вводу текста (поле ввода отрисовано)? */
@@ -4542,10 +4678,10 @@
       if (!value) {
         this.invasionState = initialInvasionState();
         this.invasionPendingCommand = null;
+        this.invasionTravelRetries = 0;
         this.invasionLastStartedDay = null;
         await setMeta("invasionLastStartedDay", null);
-        this.state.invasionPhase = "idle";
-        this.state.invasionStage = 0;
+        this.syncInvasionState();
       }
       await setMeta("invasionEnabled", value);
       this.evaluateAdvice();
@@ -5229,6 +5365,7 @@
      */
     checkKeyboardLiveness() {
       this.tickMapTravel();
+      this.tickInvasionTravel();
       this.maybePageReload();
       if (this.state.mode === "observe") return;
       if (this.captchaActive()) return;
@@ -5459,7 +5596,7 @@
       } catch {
         return;
       }
-      const local = "0.3.261112.1305";
+      const local = "0.3.261113.0933";
       if (remote === null || !isNewerVersion(remote, local)) return;
       const firstNotice = this.state.updateAvailable?.remote !== remote;
       this.state.updateAvailable = { remote, local };
@@ -5796,6 +5933,24 @@
               }
               this.panel?.update(this.state);
             }
+            if (locationName !== null && (this.invasionState.phase === "travel" || this.invasionState.phase === "fight")) {
+              const before = this.invasionState;
+              const step = invasionOnLocationHeader(this.invasionState, message.text, message.ts, Date.now());
+              this.invasionState = step.state;
+              if (step.state.phase !== before.phase || step.state.stage !== before.stage) {
+                this.invasionTravelRetries = 0;
+                this.syncInvasionState();
+                this.logAuto({ event: "invasion-phase", phase: step.state.phase, stage: step.state.stage, location: locationName });
+                if (step.command !== null) {
+                  this.armInvasionCommand(step.command);
+                  this.evaluateAdvice();
+                }
+                this.panel?.update(this.state);
+              }
+            }
+          }
+          if (fresh && !message.out && message.text && this.isGamePeer(message.peerId) && this.invasionState.phase === "fight" && isInvasionBattleText(message.text)) {
+            this.invasionState = invasionOnBattleMark(this.invasionState, message.ts);
           }
           if (fresh && message.text) {
             const slots = parseGardenSlots(message.text);
@@ -6221,6 +6376,8 @@
       this.maybeStartInvasion(peerId);
       if (this.invasionPendingCommand !== null && this.isChatReady()) {
         const command = this.invasionPendingCommand;
+        const sentAgo = Date.now() - (this.autoClickAtByButton.get(command) ?? 0);
+        if (sentAgo < SEND_TEXT_RESEND_COOLDOWN_MS) return;
         const kept2 = keepEarliestPlanAt(
           { timerActive: prevTimerActive, plan: prevPlan },
           { button: command, reason: "rule", detached: true },
@@ -6238,6 +6395,8 @@
       }
       if (this.mapPendingCommand !== null && this.isChatReady()) {
         const command = this.mapPendingCommand;
+        const sentAgo = Date.now() - (this.autoClickAtByButton.get(command) ?? 0);
+        if (sentAgo < SEND_TEXT_RESEND_COOLDOWN_MS) return;
         const kept2 = keepEarliestPlanAt(
           { timerActive: prevTimerActive, plan: prevPlan },
           { button: command, reason: "rule", detached: true },
@@ -6553,6 +6712,10 @@
       this.lastAutoClickSuccessAt = Date.now();
       this.autoClickAtByButton.set(planned.button, Date.now());
       if (planned.sendText === true) this.gardenSellAt = Date.now();
+      if (planned.sendText === true && this.invasionPendingCommand === planned.button) {
+        this.invasionPendingCommand = null;
+        this.logAuto({ event: "invasion-sent", command: planned.button, phase: this.invasionState.phase });
+      }
       if (planned.reason === "manual") this.manualChoice = null;
       if (planned.button.includes("\u0414\u0435\u0439\u0441\u0442\u0432\u0438\u044F")) {
         this.composerSyncSuppressMs = SUBMENU_SYNC_SUPPRESS_MS;
@@ -7326,7 +7489,7 @@
       };
       if (true) {
         const versionEl = shadow.querySelector(".version");
-        if (versionEl) versionEl.textContent = "0.3.261112.1305";
+        if (versionEl) versionEl.textContent = "0.3.261113.0933";
       }
       this.elements.toggle.addEventListener("click", () => actions.onToggleRecording());
       this.elements.updateReload.addEventListener("click", () => {
@@ -8216,7 +8379,7 @@
     const start = async () => {
       try {
         if (typeof console !== "undefined" && console.info) {
-          console.info(`[Stalker Assistant] v${"0.3.261112.1305"} started`);
+          console.info(`[Stalker Assistant] v${"0.3.261113.0933"} started`);
         }
         runtime.panel = new Panel({
           onToggleRecording: () => {
