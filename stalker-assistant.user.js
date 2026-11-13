@@ -1,7 +1,7 @@
 /* ==UserScript==
 // @name         Stalker Assistant
 // @namespace    local.stalker-assistant
-// @version      0.3.261113.1058
+// @version      0.3.261113.1105
 // @description  Сбор событий, клавиатур и решений в игре «Сталкер» (VK)
 // @match        https://vk.com/*
 // @match        https://vk.ru/*
@@ -1825,6 +1825,7 @@
   }
 
   // src/core/message.ts
+  var MAX_MESSAGE_TEXT = 1e5;
   function messageKey(message) {
     return `${message.peerId}:${message.conversationMessageId ?? message.id}`;
   }
@@ -1839,6 +1840,7 @@
     const payloadRaw = rawPayload(raw.payload);
     const date = asNumber(raw.date) ?? 0;
     const attachments = Array.isArray(raw.attachments) ? raw.attachments.map((item) => isRecord(item) && typeof item.type === "string" ? item.type : null).filter((type) => type !== null) : [];
+    const rawText = asString(raw.text);
     const message = {
       key: "",
       peerId,
@@ -1847,7 +1849,7 @@
       fromId: asNumber(pick(raw, "from_id", "fromId")),
       out: asBoolean(raw.out),
       ts: date > 0 ? date * 1e3 : context.ts ?? Date.now(),
-      text: asString(raw.text),
+      text: rawText !== null && rawText.length > MAX_MESSAGE_TEXT ? rawText.slice(0, MAX_MESSAGE_TEXT) + " \u2026[\u043E\u0431\u0440\u0435\u0437\u0430\u043D\u043E]" : rawText,
       keyboard: normalizeKeyboard(raw.keyboard),
       payloadRaw,
       payload: decodePayload(payloadRaw),
@@ -2636,6 +2638,31 @@
       };
       step();
     });
+  }
+  function repairStoreRecords(storeName, isOversized, shrink) {
+    return getDb().then((db) => new Promise((resolve, reject) => {
+      const transaction = db.transaction(storeName, "readwrite");
+      const request = transaction.objectStore(storeName).openCursor();
+      let scanned = 0;
+      let fixed = 0;
+      request.onsuccess = () => {
+        const cursor = request.result;
+        if (cursor === null) return;
+        scanned += 1;
+        const record = cursor.value;
+        try {
+          if (isOversized(record)) {
+            cursor.update(shrink(record));
+            fixed += 1;
+          }
+        } catch {
+        }
+        cursor.continue();
+      };
+      transaction.oncomplete = () => resolve({ scanned, fixed });
+      transaction.onerror = () => reject(transaction.error ?? new Error("indexedDB repair failed"));
+      transaction.onabort = () => reject(transaction.error ?? new Error("indexedDB repair aborted"));
+    }));
   }
   function pruneStore(storeName, keepCount) {
     return getDb().then((db) => new Promise((resolve, reject) => {
@@ -4391,6 +4418,19 @@
           this.noteStorageError(error, "forkRules (\u0441\u043A\u043B\u0435\u0439\u043A\u0430 \u0434\u0443\u0431\u043B\u0435\u0439)");
         }
       }
+      const repairedMessages = await repairStoreRecords(
+        "messages",
+        (message) => typeof message.text === "string" && message.text.length > MAX_MESSAGE_TEXT,
+        (message) => ({ ...message, text: message.text.slice(0, MAX_MESSAGE_TEXT) + " \u2026[\u043E\u0431\u0440\u0435\u0437\u0430\u043D\u043E]" })
+      );
+      const repairedRaw = await repairStoreRecords(
+        "raw",
+        (record) => JSON.stringify(record.payload ?? null).length > _Runtime.RAW_PAYLOAD_MAX_CHARS,
+        (record) => ({ ...record, payload: { truncated: true, repaired: true } })
+      );
+      if (repairedMessages.fixed > 0 || repairedRaw.fixed > 0) {
+        this.logAuto({ event: "db-repair", messages: repairedMessages.fixed, raw: repairedRaw.fixed });
+      }
       const loadSince = Date.now();
       const pickLoadSince = async (store, windowMs, cap) => {
         let current = windowMs;
@@ -5568,7 +5608,7 @@
       } catch {
         return;
       }
-      const local = "0.3.261113.1058";
+      const local = "0.3.261113.1105";
       if (remote === null || !isNewerVersion(remote, local)) return;
       const firstNotice = this.state.updateAvailable?.remote !== remote;
       this.state.updateAvailable = { remote, local };
@@ -7440,7 +7480,7 @@
       };
       if (true) {
         const versionEl = shadow.querySelector(".version");
-        if (versionEl) versionEl.textContent = "0.3.261113.1058";
+        if (versionEl) versionEl.textContent = "0.3.261113.1105";
       }
       this.elements.toggle.addEventListener("click", () => actions.onToggleRecording());
       this.elements.updateReload.addEventListener("click", () => {
@@ -8478,7 +8518,7 @@
       }
     };
     try {
-      const version = true ? "0.3.261113.1058" : "?";
+      const version = true ? "0.3.261113.1105" : "?";
       push({ t: Date.now(), k: "init", msg: `recorder ${version} @ ${location.host}` });
       window.addEventListener("error", (event) => {
         recordError("error", `${event.message} @${event.filename}:${event.lineno}`);
@@ -8531,7 +8571,7 @@
     const start = async () => {
       try {
         if (typeof console !== "undefined" && console.info) {
-          console.info(`[Stalker Assistant] v${"0.3.261113.1058"} started`);
+          console.info(`[Stalker Assistant] v${"0.3.261113.1105"} started`);
         }
         runtime.panel = new Panel({
           onToggleRecording: () => {
