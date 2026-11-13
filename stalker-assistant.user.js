@@ -1,7 +1,7 @@
 /* ==UserScript==
 // @name         Stalker Assistant
 // @namespace    local.stalker-assistant
-// @version      0.3.261113.0933
+// @version      0.3.261113.0952
 // @description  Сбор событий, клавиатур и решений в игре «Сталкер» (VK)
 // @match        https://vk.com/*
 // @match        https://vk.ru/*
@@ -4282,6 +4282,44 @@
     initDone = false;
     pendingApi = [];
     pendingLongPoll = [];
+    /** Счётчики для самописца памяти (memrecorder): батчи и авто-лог. */
+    statBatches = 0;
+    statLogAuto = 0;
+    /**
+     * Зонд самописца памяти («чёрный ящик» OOM): размеры всех растущих
+     * коллекций рантайма и счётчики событий. По росту конкретного поля в
+     * журнале видно, ЧТО раздувается в момент взрыва памяти.
+     */
+    memoryProbe() {
+      let keyboardRecords = 0;
+      for (const bucket of this.keyboardBuckets.values()) keyboardRecords += bucket.length;
+      let pendingWritesCount = 0;
+      for (const list of this.pendingWrites.values()) pendingWritesCount += list.length;
+      return {
+        msgSignatures: this.messageSignatures.size,
+        msgKeyboards: this.messageKeyboards.size,
+        kbBuckets: this.keyboardBuckets.size,
+        kbRecords: keyboardRecords,
+        kbFirstSeen: this.keyboardFirstSeen.size,
+        kbTimestamps: this.keyboardTimestamps.size,
+        decisions: this.decisionsByKey.size,
+        seenKeys: this.seenIncomingKeys.size,
+        lastBotTexts: this.lastBotText.size,
+        battleKbs: this.battleKeyboards.length,
+        anomalyStates: this.anomalyStates.size,
+        anomalyBolts: this.anomalyBoltsByPeer.size,
+        clickAtByButton: this.autoClickAtByButton.size,
+        forkRules: this.state.forkRules.length,
+        pendingApi: this.pendingApi.length,
+        pendingLongPoll: this.pendingLongPoll.length,
+        pendingWrites: pendingWritesCount,
+        errors: this.state.errors.length,
+        batches: this.statBatches,
+        logAuto: this.statLogAuto,
+        autoClicks: this.state.autoClicks,
+        mode: this.state.mode === "auto" ? 2 : this.state.mode === "advice" ? 1 : 0
+      };
+    }
     async init() {
       this.currentUserId = currentUserId();
       this.state.recording = sanitizeBoolean(await getMeta("recording", true), true);
@@ -5596,7 +5634,7 @@
       } catch {
         return;
       }
-      const local = "0.3.261113.0933";
+      const local = "0.3.261113.0952";
       if (remote === null || !isNewerVersion(remote, local)) return;
       const firstNotice = this.state.updateAvailable?.remote !== remote;
       this.state.updateAvailable = { remote, local };
@@ -5803,6 +5841,7 @@
       }
     }
     async handleBatch(rawMessages, source, options) {
+      this.statBatches += 1;
       const history = options?.history === true;
       const result = processBatch(rawMessages, {
         source,
@@ -6330,6 +6369,7 @@
      * ценности не несут — срезаем на входе.
      */
     logAuto(event) {
+      this.statLogAuto += 1;
       const name = typeof event.event === "string" ? event.event : "?";
       const button = typeof event.button === "string" ? event.button : "";
       const signature = `${name}${button}`;
@@ -7489,7 +7529,7 @@
       };
       if (true) {
         const versionEl = shadow.querySelector(".version");
-        if (versionEl) versionEl.textContent = "0.3.261113.0933";
+        if (versionEl) versionEl.textContent = "0.3.261113.0952";
       }
       this.elements.toggle.addEventListener("click", () => actions.onToggleRecording());
       this.elements.updateReload.addEventListener("click", () => {
@@ -8361,11 +8401,122 @@
     }
   }
 
+  // src/memrecorder.ts
+  var MEMLOG_KEY = "stalkerMemLog";
+  var MEMLOG_CAP = 360;
+  var SPIKE_WINDOW = 30;
+  var SPIKE_MB = 50;
+  var SPIKE_THROTTLE_MS = 6e4;
+  var ERR_THROTTLE_MS = 3e4;
+  var SAMPLE_MS = 3e3;
+  function pushMemEntry(log, entry, cap = MEMLOG_CAP) {
+    const next = [...log, entry];
+    return next.length > cap ? next.slice(next.length - cap) : next;
+  }
+  function detectMemSpike(samples, thresholdMB = SPIKE_MB) {
+    const valid = samples.filter((sample) => typeof sample.u === "number").map((sample) => sample.u);
+    if (valid.length < 2) return null;
+    const delta = valid[valid.length - 1] - valid[0];
+    return delta >= thresholdMB ? Math.round(delta) : null;
+  }
+  function startMemoryRecorder() {
+    if (typeof window === "undefined") return;
+    const globals = window;
+    if (globals.__stalkerMemRecorder === true) return;
+    globals.__stalkerMemRecorder = true;
+    let log = loadLog();
+    const samples = [];
+    let lastSpikeAt = 0;
+    const errSeen = /* @__PURE__ */ new Map();
+    const push = (entry) => {
+      try {
+        log = pushMemEntry(log, entry);
+        localStorage.setItem(MEMLOG_KEY, JSON.stringify(log));
+      } catch {
+      }
+    };
+    const readProbe = () => {
+      try {
+        return typeof globals.__stalkerProbe === "function" ? globals.__stalkerProbe() : void 0;
+      } catch {
+        return void 0;
+      }
+    };
+    const sample = () => {
+      try {
+        const memory = performance.memory;
+        const used = memory ? Math.round(memory.usedJSHeapSize / 1048576) : void 0;
+        const total = memory ? Math.round(memory.totalJSHeapSize / 1048576) : void 0;
+        const domNodes = document.getElementsByTagName("*").length;
+        const probe = readProbe();
+        const entry = { t: Date.now(), k: "s", u: used, tot: total, dom: domNodes };
+        if (probe !== void 0) entry.p = probe;
+        samples.push(entry);
+        if (samples.length > SPIKE_WINDOW) samples.shift();
+        push(entry);
+        const delta = detectMemSpike(samples);
+        if (delta !== null && Date.now() - lastSpikeAt > SPIKE_THROTTLE_MS) {
+          lastSpikeAt = Date.now();
+          push({ t: Date.now(), k: "spike", d: delta, u: used, dom: domNodes, p: probe });
+          console.warn(
+            `[Stalker Assistant] \u26A0 \u043F\u0430\u043C\u044F\u0442\u044C +${delta} \u041C\u0411 \u0437\u0430 ~${SPIKE_WINDOW * SAMPLE_MS / 1e3}\u0441 (\u043A\u0443\u0447\u0430 ${used} \u041C\u0411, DOM ${domNodes} \u0443\u0437\u043B\u043E\u0432) \u2014 \u043F\u043E\u0434\u0440\u043E\u0431\u043D\u043E\u0441\u0442\u0438 \u0432 localStorage['${MEMLOG_KEY}']`,
+            probe
+          );
+        }
+      } catch {
+      }
+    };
+    const recordError = (kind, message) => {
+      try {
+        const key = kind + "|" + message.slice(0, 120);
+        const last = errSeen.get(key) ?? 0;
+        if (Date.now() - last < ERR_THROTTLE_MS) return;
+        errSeen.set(key, Date.now());
+        push({ t: Date.now(), k: "err", msg: kind + ": " + message.slice(0, 400) });
+      } catch {
+      }
+    };
+    try {
+      const version = true ? "0.3.261113.0952" : "?";
+      push({ t: Date.now(), k: "init", msg: `recorder ${version} @ ${location.host}` });
+      window.addEventListener("error", (event) => {
+        recordError("error", `${event.message} @${event.filename}:${event.lineno}`);
+      });
+      window.addEventListener("unhandledrejection", (event) => {
+        const reason = event.reason instanceof Error ? event.reason.message : String(event.reason);
+        recordError("rejection", reason);
+      });
+      globals.__stalkerMemNote = (kind, msg) => {
+        push({ t: Date.now(), k: "note", msg: (kind + " " + (msg ?? "")).slice(0, 300) });
+      };
+      window.setInterval(sample, SAMPLE_MS);
+      sample();
+    } catch {
+    }
+  }
+  function loadLog() {
+    try {
+      const raw = localStorage.getItem(MEMLOG_KEY);
+      if (raw === null) return [];
+      const parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed)) return [];
+      return parsed.filter((entry) => typeof entry === "object" && entry !== null && typeof entry.t === "number");
+    } catch {
+      return [];
+    }
+  }
+
   // src/main.ts
   var INIT_RETRY_MS = 2e4;
   if (typeof window !== "undefined" && !window.__stalkerAssistant) {
     window.__stalkerAssistant = true;
+    startMemoryRecorder();
+    const memNote = (kind, msg) => {
+      const globals = window;
+      globals.__stalkerMemNote?.(kind, msg);
+    };
     const runtime = new Runtime();
+    window.__stalkerProbe = () => runtime.memoryProbe();
     let domCollector = null;
     installInterceptors({
       onApi: (method, response, context) => {
@@ -8379,7 +8530,7 @@
     const start = async () => {
       try {
         if (typeof console !== "undefined" && console.info) {
-          console.info(`[Stalker Assistant] v${"0.3.261113.0933"} started`);
+          console.info(`[Stalker Assistant] v${"0.3.261113.0952"} started`);
         }
         runtime.panel = new Panel({
           onToggleRecording: () => {
@@ -8454,10 +8605,13 @@
         document.addEventListener("keydown", (event) => {
           if (event.isTrusted) runtime.noteUserActivity();
         }, true);
+        memNote("init-start");
         await runtime.init();
+        memNote("init-ok");
         console.info("[Stalker Assistant] init ok");
         afterInit();
       } catch (error) {
+        memNote("init-fail", error instanceof Error ? error.message : String(error));
         runtime.state.recording = false;
         console.warn("[Stalker Assistant] init \u043D\u0435 \u0437\u0430\u0432\u0435\u0440\u0448\u0438\u043B\u0441\u044F:", error);
         runtime.reportError(error, "init");
