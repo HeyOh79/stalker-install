@@ -1,7 +1,7 @@
 /* ==UserScript==
 // @name         Stalker Assistant
 // @namespace    local.stalker-assistant
-// @version      0.3.261113.1105
+// @version      0.3.261113.1109
 // @description  Сбор событий, клавиатур и решений в игре «Сталкер» (VK)
 // @match        https://vk.com/*
 // @match        https://vk.ru/*
@@ -5608,7 +5608,7 @@
       } catch {
         return;
       }
-      const local = "0.3.261113.1105";
+      const local = "0.3.261113.1109";
       if (remote === null || !isNewerVersion(remote, local)) return;
       const firstNotice = this.state.updateAvailable?.remote !== remote;
       this.state.updateAvailable = { remote, local };
@@ -7480,7 +7480,7 @@
       };
       if (true) {
         const versionEl = shadow.querySelector(".version");
-        if (versionEl) versionEl.textContent = "0.3.261113.1105";
+        if (versionEl) versionEl.textContent = "0.3.261113.1109";
       }
       this.elements.toggle.addEventListener("click", () => actions.onToggleRecording());
       this.elements.updateReload.addEventListener("click", () => {
@@ -8414,7 +8414,7 @@
 
   // src/memrecorder.ts
   var MEMLOG_KEY = "stalkerMemLog";
-  var MEMLOG_CAP = 360;
+  var MEMLOG_CAP = 1200;
   var SPIKE_WINDOW = 30;
   var SPIKE_MB = 50;
   var SPIKE_THROTTLE_MS = 6e4;
@@ -8518,7 +8518,7 @@
       }
     };
     try {
-      const version = true ? "0.3.261113.1105" : "?";
+      const version = true ? "0.3.261113.1109" : "?";
       push({ t: Date.now(), k: "init", msg: `recorder ${version} @ ${location.host}` });
       window.addEventListener("error", (event) => {
         recordError("error", `${event.message} @${event.filename}:${event.lineno}`);
@@ -8571,7 +8571,7 @@
     const start = async () => {
       try {
         if (typeof console !== "undefined" && console.info) {
-          console.info(`[Stalker Assistant] v${"0.3.261113.1105"} started`);
+          console.info(`[Stalker Assistant] v${"0.3.261113.1109"} started`);
         }
         runtime.panel = new Panel({
           onToggleRecording: () => {
