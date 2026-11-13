@@ -1,7 +1,7 @@
 /* ==UserScript==
 // @name         Stalker Assistant
 // @namespace    local.stalker-assistant
-// @version      0.3.261113.1425
+// @version      0.3.261113.1518
 // @description  Сбор событий, клавиатур и решений в игре «Сталкер» (VK)
 // @match        https://vk.com/*
 // @match        https://vk.ru/*
@@ -181,7 +181,7 @@
   var COLOR_TASK_RE = /по\s+цвету|смотри\s+только\s+на\s+цвет|цвет\s+кноп|надписи\s+вр[уа]т|(?:красн|зелен|син|бел|сер)[а-яё]*[ую]\s+кнопк|кнопк[а-яё]*,?\s*которая\s+не/iu;
   var COLOR_WORD_RE = /(зелен|красн|син|бел|сер)/gu;
   var QUOTED_SPAN_RE = /«[^»]*»/gu;
-  function parseColorInstruction(text) {
+  function parseColorInstructionDetail(text) {
     const normalized = text.toLowerCase().replace(/ё/gu, "\u0435");
     if (!COLOR_TASK_RE.test(normalized)) return null;
     const clean = normalized.replace(QUOTED_SPAN_RE, " ");
@@ -200,9 +200,13 @@
     }
     if (allowed.size === 0 && excluded.size === 0) return null;
     if (allowed.size === 0) {
-      return new Set(ALL_COLORS.filter((color) => !excluded.has(color)));
+      return { allowed: new Set(ALL_COLORS.filter((color) => !excluded.has(color))), negationForm: true };
     }
-    return new Set([...allowed].filter((color) => !excluded.has(color)));
+    return { allowed: new Set([...allowed].filter((color) => !excluded.has(color))), negationForm: false };
+  }
+  function parseColorInstruction(text) {
+    const detail = parseColorInstructionDetail(text);
+    return detail === null ? null : detail.allowed;
   }
 
   // src/core/auto.ts
@@ -1150,9 +1154,15 @@
     return partial[Math.floor(Math.random() * partial.length)] ?? null;
   }
   function findColorButton(keyboard, fullText) {
-    const allowed = parseColorInstruction(fullText);
-    if (!allowed || allowed.size === 0) return null;
-    return flattenButtons(keyboard).find((button) => button.color !== null && allowed.has(button.color) && isTaskCandidate(button)) ?? null;
+    const instruction = parseColorInstructionDetail(fullText);
+    if (!instruction || instruction.allowed.size === 0) return null;
+    const buttons = flattenButtons(keyboard);
+    const colored = buttons.find((button) => button.color !== null && instruction.allowed.has(button.color) && isTaskCandidate(button));
+    if (colored !== void 0) return colored;
+    if (instruction.negationForm) {
+      return buttons.find((button) => (button.color === null || button.color === "default") && isTaskCandidate(button)) ?? null;
+    }
+    return null;
   }
   function firstIconCodePoint(text) {
     const cleaned = text.replace(/^Загружается(?:\.\.\.|…)\s*/u, "").trim();
@@ -5651,7 +5661,7 @@
       } catch {
         return;
       }
-      const local = "0.3.261113.1425";
+      const local = "0.3.261113.1518";
       if (remote === null || !isNewerVersion(remote, local)) return;
       const firstNotice = this.state.updateAvailable?.remote !== remote;
       this.state.updateAvailable = { remote, local };
@@ -7555,7 +7565,7 @@
       };
       if (true) {
         const versionEl = shadow.querySelector(".version");
-        if (versionEl) versionEl.textContent = "0.3.261113.1425";
+        if (versionEl) versionEl.textContent = "0.3.261113.1518";
       }
       this.elements.toggle.addEventListener("click", () => actions.onToggleRecording());
       this.elements.updateReload.addEventListener("click", () => {
@@ -8593,7 +8603,7 @@
       }
     };
     try {
-      const version = true ? "0.3.261113.1425" : "?";
+      const version = true ? "0.3.261113.1518" : "?";
       push({ t: Date.now(), k: "init", msg: `recorder ${version} @ ${location.host}` });
       window.addEventListener("error", (event) => {
         recordError("error", `${event.message} @${event.filename}:${event.lineno}`);
@@ -8646,7 +8656,7 @@
     const start = async () => {
       try {
         if (typeof console !== "undefined" && console.info) {
-          console.info(`[Stalker Assistant] v${"0.3.261113.1425"} started`);
+          console.info(`[Stalker Assistant] v${"0.3.261113.1518"} started`);
         }
         runtime.panel = new Panel({
           onToggleRecording: () => {
