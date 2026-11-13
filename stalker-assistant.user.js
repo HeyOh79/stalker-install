@@ -1,7 +1,7 @@
 /* ==UserScript==
 // @name         Stalker Assistant
 // @namespace    local.stalker-assistant
-// @version      0.3.261113.1048
+// @version      0.3.261113.1053
 // @description  Сбор событий, клавиатур и решений в игре «Сталкер» (VK)
 // @match        https://vk.com/*
 // @match        https://vk.ru/*
@@ -5568,7 +5568,7 @@
       } catch {
         return;
       }
-      const local = "0.3.261113.1048";
+      const local = "0.3.261113.1053";
       if (remote === null || !isNewerVersion(remote, local)) return;
       const firstNotice = this.state.updateAvailable?.remote !== remote;
       this.state.updateAvailable = { remote, local };
@@ -7440,7 +7440,7 @@
       };
       if (true) {
         const versionEl = shadow.querySelector(".version");
-        if (versionEl) versionEl.textContent = "0.3.261113.1048";
+        if (versionEl) versionEl.textContent = "0.3.261113.1053";
       }
       this.elements.toggle.addEventListener("click", () => actions.onToggleRecording());
       this.elements.updateReload.addEventListener("click", () => {
@@ -8349,6 +8349,7 @@
     const delta = valid[valid.length - 1] - valid[0];
     return delta >= thresholdMB ? Math.round(delta) : null;
   }
+  var RESOURCE_BUFFER_CAP = 5e3;
   function startMemoryRecorder() {
     if (typeof window === "undefined") return;
     const globals = window;
@@ -8358,6 +8359,12 @@
     const samples = [];
     let lastSpikeAt = 0;
     const errSeen = /* @__PURE__ */ new Map();
+    let requestBase = 0;
+    let transferBaseMB = 0;
+    try {
+      performance.setResourceTimingBufferSize(RESOURCE_BUFFER_CAP);
+    } catch {
+    }
     const push = (entry) => {
       try {
         log = pushMemEntry(log, entry);
@@ -8378,8 +8385,31 @@
         const used = memory ? Math.round(memory.usedJSHeapSize / 1048576) : void 0;
         const total = memory ? Math.round(memory.totalJSHeapSize / 1048576) : void 0;
         const domNodes = document.getElementsByTagName("*").length;
+        let requests = requestBase;
+        let transferMB = transferBaseMB;
+        try {
+          const resources = performance.getEntriesByType("resource");
+          requests += resources.length;
+          let bufferBytes = 0;
+          for (const resource of resources) bufferBytes += resource.transferSize ?? 0;
+          transferMB += Math.round(bufferBytes / 1048576);
+          if (resources.length >= RESOURCE_BUFFER_CAP - 100) {
+            requestBase = requests;
+            transferBaseMB = transferMB;
+            performance.clearResourceTimings();
+          }
+        } catch {
+        }
         const probe = readProbe();
-        const entry = { t: Date.now(), k: "s", u: used, tot: total, dom: domNodes };
+        const entry = {
+          t: Date.now(),
+          k: "s",
+          u: used,
+          tot: total,
+          dom: domNodes,
+          req: requests,
+          xfer: transferMB
+        };
         if (probe !== void 0) entry.p = probe;
         samples.push(entry);
         if (samples.length > SPIKE_WINDOW) samples.shift();
@@ -8407,7 +8437,7 @@
       }
     };
     try {
-      const version = true ? "0.3.261113.1048" : "?";
+      const version = true ? "0.3.261113.1053" : "?";
       push({ t: Date.now(), k: "init", msg: `recorder ${version} @ ${location.host}` });
       window.addEventListener("error", (event) => {
         recordError("error", `${event.message} @${event.filename}:${event.lineno}`);
@@ -8460,7 +8490,7 @@
     const start = async () => {
       try {
         if (typeof console !== "undefined" && console.info) {
-          console.info(`[Stalker Assistant] v${"0.3.261113.1048"} started`);
+          console.info(`[Stalker Assistant] v${"0.3.261113.1053"} started`);
         }
         runtime.panel = new Panel({
           onToggleRecording: () => {
