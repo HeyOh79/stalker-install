@@ -1,7 +1,7 @@
 /* ==UserScript==
 // @name         Stalker Assistant
 // @namespace    local.stalker-assistant
-// @version      0.3.261113.1120
+// @version      0.3.261113.1133
 // @description  Сбор событий, клавиатур и решений в игре «Сталкер» (VK)
 // @match        https://vk.com/*
 // @match        https://vk.ru/*
@@ -2459,12 +2459,21 @@
 
   // src/core/hang.ts
   var PAGE_RELOAD_AFTER_MS = 5 * 6e4;
+  var NO_ACTION_RELOAD_AFTER_MS = 8 * 6e4;
+  var DEAD_CLICKS_RELOAD_AFTER_MS = 4 * 6e4;
   function pageReloadDecision(input) {
     if (input.mode !== "auto") return "wait";
     if (!input.isGameChat || input.hidden) return "wait";
     if (input.captchaActive || input.manualPaused || input.blindFishing) return "wait";
     if (input.adviceHold || input.pendingChoice) return "wait";
     if (input.cacheSearchActive || input.helicopterActive || input.restActive) return "wait";
+    if (input.fishingWait) return "wait";
+    if (input.deadClicksMs !== null && input.deadClicksMs > DEAD_CLICKS_RELOAD_AFTER_MS) {
+      return "schedule";
+    }
+    if (input.noActionMs !== null && input.noActionMs > NO_ACTION_RELOAD_AFTER_MS) {
+      return "schedule";
+    }
     if (input.silentMs <= PAGE_RELOAD_AFTER_MS) return "wait";
     if (!input.hasScreen) return "wait";
     return "schedule";
@@ -4162,6 +4171,14 @@
     lastGameActivityAt = Date.now();
     /** Слепые клики по полю без ответа игры (защита петель, см. blind-anomaly). */
     anomalyBlindClicks = 0;
+    /** Последний момент с действием (совет с кнопкой/план/выбор) — детектор «стоит часами». */
+    lastActionableAt = Date.now();
+    /** Начало серии мёртвых кликов (repeat-pause без обновления клавиатур); null — серии нет. */
+    deadClicksSince = null;
+    /** Последняя repeat-pause (серия жива, только если паузы продолжаются). */
+    lastRepeatPauseAt = 0;
+    /** Причина последнего решения детектора зависания (для лога). */
+    lastHangReason = "game-silent";
     /** Причина запланированной перезагрузки (для заметки панели и маркера). */
     pageReloadSilentMs = 0;
     /** До этого момента авто приостановлен капчей ВК (30 с после последнего ВИДИМОГО следа). */
@@ -5619,7 +5636,7 @@
       } catch {
         return;
       }
-      const local = "0.3.261113.1120";
+      const local = "0.3.261113.1133";
       if (remote === null || !isNewerVersion(remote, local)) return;
       const firstNotice = this.state.updateAvailable?.remote !== remote;
       this.state.updateAvailable = { remote, local };
@@ -5641,6 +5658,10 @@
     pageReloadDecision(peerId) {
       const now = Date.now();
       const keyboardMessage = this.currentForkKeyboard(peerId);
+      const actionable = this.plannedAction !== null || this.state.pendingChoice !== null || this.manualChoice !== null || this.state.advice !== null && (this.state.advice.button !== null || this.state.advice.hold === true);
+      if (actionable) this.lastActionableAt = now;
+      const deadClicksMs = this.deadClicksSince !== null && now - this.lastRepeatPauseAt < 9e4 ? now - this.deadClicksSince : null;
+      this.lastHangReason = deadClicksMs !== null && deadClicksMs > DEAD_CLICKS_RELOAD_AFTER_MS ? "dead-clicks" : actionable === false && now - this.lastActionableAt > NO_ACTION_RELOAD_AFTER_MS ? "no-action" : "game-silent";
       return pageReloadDecision({
         mode: this.state.mode,
         isGameChat: this.state.isGameChat,
@@ -5653,8 +5674,11 @@
         cacheSearchActive: now < (this.cacheUntilByPeer.get(peerId) ?? 0),
         helicopterActive: now < (this.helicopterUntilByPeer.get(peerId) ?? 0),
         restActive: this.restPhaseByPeer.has(peerId),
+        fishingWait: now < this.fishingUntil,
         silentMs: now - this.lastGameActivityAt,
-        hasScreen: keyboardMessage !== null || this.state.advice !== null || this.plannedAction !== null
+        hasScreen: keyboardMessage !== null || this.state.advice !== null || this.plannedAction !== null,
+        noActionMs: actionable ? null : now - this.lastActionableAt,
+        deadClicksMs
       });
     }
     cancelPageReload() {
@@ -5695,7 +5719,8 @@
       this.logAuto({
         event: "page-reload-scheduled",
         silentMs: this.pageReloadSilentMs,
-        graceMs: PAGE_RELOAD_GRACE_MS
+        graceMs: PAGE_RELOAD_GRACE_MS,
+        reason: this.lastHangReason
       });
       this.panel?.update(this.state);
     }
@@ -5864,6 +5889,7 @@
           const known = this.keyboardFirstSeen.get(message.key);
           if (known === void 0 || message.ts < known) this.keyboardFirstSeen.set(message.key, message.ts);
         }
+        if (changedKeyboardKeys.size > 0) this.deadClicksSince = null;
         const prevBotCmid = new Map(this.lastBotCmid);
         for (const message of effective) {
           if (message.out) continue;
@@ -6057,6 +6083,8 @@
               this.clickStreak = nextClickStreak(this.clickStreak, this.lastAutoClickButton);
               if (this.clickStreak.count >= AUTO_SAME_CLICK_LIMIT) {
                 this.state.autoRepeatPauseUntil = Date.now() + AUTO_REPEAT_PAUSE_MS;
+                this.deadClicksSince ??= Date.now();
+                this.lastRepeatPauseAt = Date.now();
                 this.logAuto({ event: "repeat-pause", button: this.lastAutoClickButton, clicks: this.clickStreak.count, cause: "stale-screen", pauseMs: AUTO_REPEAT_PAUSE_MS });
                 this.clickStreak = null;
               }
@@ -6789,6 +6817,8 @@
             }
           } else {
             this.state.autoRepeatPauseUntil = Date.now() + AUTO_REPEAT_PAUSE_MS;
+            this.deadClicksSince ??= Date.now();
+            this.lastRepeatPauseAt = Date.now();
             this.logAuto({ event: "repeat-pause", button: planned.button, clicks: this.clickStreak.count, pauseMs: AUTO_REPEAT_PAUSE_MS });
             this.clickStreak = null;
           }
@@ -7510,7 +7540,7 @@
       };
       if (true) {
         const versionEl = shadow.querySelector(".version");
-        if (versionEl) versionEl.textContent = "0.3.261113.1120";
+        if (versionEl) versionEl.textContent = "0.3.261113.1133";
       }
       this.elements.toggle.addEventListener("click", () => actions.onToggleRecording());
       this.elements.updateReload.addEventListener("click", () => {
@@ -8548,7 +8578,7 @@
       }
     };
     try {
-      const version = true ? "0.3.261113.1120" : "?";
+      const version = true ? "0.3.261113.1133" : "?";
       push({ t: Date.now(), k: "init", msg: `recorder ${version} @ ${location.host}` });
       window.addEventListener("error", (event) => {
         recordError("error", `${event.message} @${event.filename}:${event.lineno}`);
@@ -8601,7 +8631,7 @@
     const start = async () => {
       try {
         if (typeof console !== "undefined" && console.info) {
-          console.info(`[Stalker Assistant] v${"0.3.261113.1120"} started`);
+          console.info(`[Stalker Assistant] v${"0.3.261113.1133"} started`);
         }
         runtime.panel = new Panel({
           onToggleRecording: () => {
