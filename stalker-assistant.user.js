@@ -1,7 +1,7 @@
 /* ==UserScript==
 // @name         Stalker Assistant
 // @namespace    local.stalker-assistant
-// @version      0.3.261113.1053
+// @version      0.3.261113.1058
 // @description  Сбор событий, клавиатур и решений в игре «Сталкер» (VK)
 // @match        https://vk.com/*
 // @match        https://vk.ru/*
@@ -5568,7 +5568,7 @@
       } catch {
         return;
       }
-      const local = "0.3.261113.1053";
+      const local = "0.3.261113.1058";
       if (remote === null || !isNewerVersion(remote, local)) return;
       const firstNotice = this.state.updateAvailable?.remote !== remote;
       this.state.updateAvailable = { remote, local };
@@ -7440,7 +7440,7 @@
       };
       if (true) {
         const versionEl = shadow.querySelector(".version");
-        if (versionEl) versionEl.textContent = "0.3.261113.1053";
+        if (versionEl) versionEl.textContent = "0.3.261113.1058";
       }
       this.elements.toggle.addEventListener("click", () => actions.onToggleRecording());
       this.elements.updateReload.addEventListener("click", () => {
@@ -8163,26 +8163,66 @@
   };
 
   // src/vk/intercept.ts
-  var CLONE_READ_TIMEOUT_MS = 35e3;
+  var CLONE_READ_TIMEOUT_MS = 3e4;
+  var MAX_CAPTURE_BYTES = 2 * 1024 * 1024;
   function isStreamContentType(contentType) {
     return /text\/event-stream|octet-stream/i.test(contentType);
+  }
+  async function readClonedJsonBounded(clone) {
+    const reader = clone.body?.getReader();
+    if (reader === void 0) {
+      try {
+        return { ok: true, json: await clone.json() };
+      } catch {
+        return { ok: false };
+      }
+    }
+    const chunks = [];
+    let total = 0;
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      cancelled = true;
+      void reader.cancel();
+    }, CLONE_READ_TIMEOUT_MS);
+    try {
+      for (; ; ) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (value === void 0) continue;
+        total += value.byteLength;
+        if (total > MAX_CAPTURE_BYTES) {
+          cancelled = true;
+          void reader.cancel();
+          break;
+        }
+        chunks.push(value);
+      }
+    } catch {
+      window.clearTimeout(timer);
+      return { ok: false };
+    } finally {
+      window.clearTimeout(timer);
+    }
+    if (cancelled) return { ok: false };
+    const merged = new Uint8Array(total);
+    let offset = 0;
+    for (const chunk of chunks) {
+      merged.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    try {
+      return { ok: true, json: JSON.parse(new TextDecoder().decode(merged)) };
+    } catch {
+      return { ok: false };
+    }
   }
   function readClonedJson(response, onJson, onError) {
     try {
       const contentType = response.headers?.get?.("content-type") ?? "";
       if (isStreamContentType(contentType)) return;
-      const clone = response.clone();
-      const timer = window.setTimeout(() => {
-        try {
-          void clone.body?.cancel();
-        } catch {
-        }
-      }, CLONE_READ_TIMEOUT_MS);
-      clone.json().then((json) => {
-        window.clearTimeout(timer);
-        onJson(json);
+      void readClonedJsonBounded(response.clone()).then((result) => {
+        if (result.ok) onJson(result.json);
       }).catch((error) => {
-        window.clearTimeout(timer);
         onError?.(error, "fetch parse");
       });
     } catch (error) {
@@ -8245,6 +8285,7 @@
             if (this.responseType === "json") {
               json = this.response;
             } else if ((this.responseType === "" || this.responseType === "text") && this.responseText) {
+              if (this.responseText.length > MAX_CAPTURE_BYTES) return;
               json = JSON.parse(this.responseText);
             } else {
               return;
@@ -8437,7 +8478,7 @@
       }
     };
     try {
-      const version = true ? "0.3.261113.1053" : "?";
+      const version = true ? "0.3.261113.1058" : "?";
       push({ t: Date.now(), k: "init", msg: `recorder ${version} @ ${location.host}` });
       window.addEventListener("error", (event) => {
         recordError("error", `${event.message} @${event.filename}:${event.lineno}`);
@@ -8490,7 +8531,7 @@
     const start = async () => {
       try {
         if (typeof console !== "undefined" && console.info) {
-          console.info(`[Stalker Assistant] v${"0.3.261113.1053"} started`);
+          console.info(`[Stalker Assistant] v${"0.3.261113.1058"} started`);
         }
         runtime.panel = new Panel({
           onToggleRecording: () => {
