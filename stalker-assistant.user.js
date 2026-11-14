@@ -1,7 +1,7 @@
 /* ==UserScript==
 // @name         Stalker Assistant
 // @namespace    local.stalker-assistant
-// @version      0.3.261114.1044
+// @version      0.3.261114.1101
 // @description  Сбор событий, клавиатур и решений в игре «Сталкер» (VK)
 // @match        https://vk.com/*
 // @match        https://vk.ru/*
@@ -320,7 +320,11 @@
       }
     }
     if (context.fishingWaiting) return null;
-    const rule = context.fishing ? null : findForkRule(context.forkRules ?? [], forkSignature(keyboard));
+    const onFishingScreen = context.fishing === true && flattenButtons(keyboard).some((button) => {
+      const text = comparable(button.text);
+      return text.includes("\u0437\u0430\u043A\u0438\u043D\u0443\u0442\u044C \u0435\u0449\u0435") || text.includes("\u0438\u0441\u0441\u043B\u0435\u0434\u043E\u0432\u0430\u0442\u044C \u0434\u0430\u043B\u044C\u0448\u0435");
+    });
+    const rule = onFishingScreen ? null : findForkRule(context.forkRules ?? [], forkSignature(keyboard));
     if (rule?.choice) {
       const target = comparable(rule.choice);
       const flat = flattenButtons(keyboard);
@@ -5974,7 +5978,7 @@
       } catch {
         return;
       }
-      const local = "0.3.261114.1044";
+      const local = "0.3.261114.1101";
       if (remote === null || !isNewerVersion(remote, local)) return;
       const firstNotice = this.state.updateAvailable?.remote !== remote;
       this.state.updateAvailable = { remote, local };
@@ -6299,7 +6303,7 @@
             if (this.isGamePeer(message.peerId)) this.lastGameActivityAt = Date.now();
           }
           if (fresh && message.text && isFishingFlowText(message.text)) {
-            this.fishingUntil = message.ts + FISHING_WINDOW_MS;
+            this.fishingUntil = /Сворачиваем удочки/u.test(message.text) ? message.ts : message.ts + FISHING_WINDOW_MS;
           }
           if (fresh && message.text && this.isGamePeer(message.peerId)) {
             const locationName = mapLocationFromText(message.text);
@@ -7895,7 +7899,7 @@
       };
       if (true) {
         const versionEl = shadow.querySelector(".version");
-        if (versionEl) versionEl.textContent = "0.3.261114.1044";
+        if (versionEl) versionEl.textContent = "0.3.261114.1101";
       }
       this.elements.toggle.addEventListener("click", () => actions.onToggleRecording());
       this.elements.updateReload.addEventListener("click", () => {
@@ -8968,7 +8972,7 @@
       }
     };
     try {
-      const version = true ? "0.3.261114.1044" : "?";
+      const version = true ? "0.3.261114.1101" : "?";
       push({ t: Date.now(), k: "init", msg: `recorder ${version} @ ${location.host}` });
       window.addEventListener("error", (event) => {
         recordError("error", `${event.message} @${event.filename}:${event.lineno}`);
@@ -9021,7 +9025,7 @@
     const start = async () => {
       try {
         if (typeof console !== "undefined" && console.info) {
-          console.info(`[Stalker Assistant] v${"0.3.261114.1044"} started`);
+          console.info(`[Stalker Assistant] v${"0.3.261114.1101"} started`);
         }
         runtime.panel = new Panel({
           onToggleRecording: () => {
