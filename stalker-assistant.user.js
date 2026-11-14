@@ -1,7 +1,7 @@
 /* ==UserScript==
 // @name         Stalker Assistant
 // @namespace    local.stalker-assistant
-// @version      0.3.261114.0826
+// @version      0.3.261114.0841
 // @description  Сбор событий, клавиатур и решений в игре «Сталкер» (VK)
 // @match        https://vk.com/*
 // @match        https://vk.ru/*
@@ -479,7 +479,7 @@
   }
 
   // src/core/anomaly.ts
-  var emptyCell = () => ({ signal: null, scouted: null, total: null, revealed: {}, passes: {} });
+  var emptyCell = () => ({ signal: null, scouted: null, total: null, revealed: {}, passes: {}, visits: 0 });
   var DELTA = {
     \u0441\u0435\u0432\u0435\u0440: [0, -1],
     \u044E\u0433: [0, 1],
@@ -590,6 +590,7 @@
     if (from !== null) next.cameFrom = from;
     const key = cellKey(next.x, next.y);
     const cell = next.cells[key] ?? emptyCell();
+    cell.visits += 1;
     next.cells[key] = cell;
     const signal = SIGNAL_RE.exec(text);
     if (signal) {
@@ -696,6 +697,23 @@
     }
     return null;
   }
+  function isCycling(moves) {
+    if (moves.length < 4) return false;
+    const tail = moves.slice(-6);
+    const period = (p) => {
+      let matches = 0;
+      for (let i = 0; i + p < tail.length; i += 1) {
+        if (tail[i] === tail[i + p]) matches += 1;
+      }
+      return matches >= tail.length - p;
+    };
+    if (tail.length >= 6) {
+      const noRepeats = tail.every((direction, index) => index === 0 || direction !== tail[index - 1]);
+      const distinct = new Set(tail).size;
+      if (noRepeats && distinct <= 3) return true;
+    }
+    return period(2) || period(3);
+  }
   function anomalyNextMove(state, keyboard) {
     const texts = flattenButtons(keyboard).map((button) => comparableButtonText2(button.text));
     const has = (needle) => texts.some((text) => text.includes(needle));
@@ -708,7 +726,8 @@
     if (has("\u043E\u0431\u044B\u0441\u043A\u0430\u0442\u044C")) return { kind: "search" };
     const directions = directionButtons(keyboard);
     const cell = state !== null ? state.cells[cellKey(state.x, state.y)] ?? emptyCell() : emptyCell();
-    if (state !== null && (state.trend === "down" || state.silence)) {
+    const cycling = state !== null && isCycling(state.recentMoves);
+    if (state !== null && !cycling && (state.trend === "down" || state.silence)) {
       const back = state.cameFrom;
       if (back !== null && directions.includes(back)) return { kind: "move", direction: back, why: "back" };
     }
@@ -733,15 +752,27 @@
       };
       const moves = state?.recentMoves ?? [];
       const oscillating = moves.length >= 2 && moves[moves.length - 1] !== void 0 && moves[moves.length - 2] !== void 0 && moves[moves.length - 2] === OPPOSITE[moves[moves.length - 1]] ? OPPOSITE[moves[moves.length - 1]] : null;
+      const targetVisits = (direction) => {
+        if (targetVisited(direction)) {
+          if (state === null) return 1;
+          const [dx, dy] = DELTA[direction];
+          return Math.max(1, state.cells[cellKey(state.x + dx, state.y + dy)]?.visits ?? 1);
+        }
+        return 0;
+      };
       let target = null;
-      if (state?.trend === "up" && state.lastMove !== null && untried.includes(state.lastMove) && state.lastMove !== oscillating) {
+      if (!cycling && state?.trend === "up" && state.lastMove !== null && untried.includes(state.lastMove) && state.lastMove !== oscillating) {
         target = state.lastMove;
       }
       if (target === null) {
         const fresh = untried.filter((direction) => !targetVisited(direction));
         const calm = (fresh.length > 0 ? fresh : untried).filter((direction) => direction !== oscillating);
         const pool = calm.length > 0 ? calm : fresh.length > 0 ? fresh : untried;
-        target = pool[0] ?? null;
+        const sorted = [...pool].sort((a, b) => targetVisits(a) - targetVisits(b));
+        const best = sorted[0] ?? null;
+        const bestVisits = best !== null ? targetVisits(best) : Number.MAX_SAFE_INTEGER;
+        const unvisitedPick = sorted.find((direction) => targetVisits(direction) === 0) ?? null;
+        target = unvisitedPick ?? (bestVisits <= 1 ? best : null);
       }
       if (target !== null) {
         return { kind: "move", direction: target, why: state?.trend === "up" && target === state.lastMove ? "course" : "explore" };
@@ -753,6 +784,7 @@
         return { kind: "move", direction: step, why: "frontier" };
       }
     }
+    if (cycling && canExit) return { kind: "exit", why: "mirage" };
     const climbing = DIRECTIONS.filter((direction) => directions.includes(direction) && cell.passes[direction] === "up");
     if (climbing.length > 0) {
       const last = state?.lastMove ?? null;
@@ -5734,7 +5766,7 @@
       } catch {
         return;
       }
-      const local = "0.3.261114.0826";
+      const local = "0.3.261114.0841";
       if (remote === null || !isNewerVersion(remote, local)) return;
       const firstNotice = this.state.updateAvailable?.remote !== remote;
       this.state.updateAvailable = { remote, local };
@@ -7643,7 +7675,7 @@
       };
       if (true) {
         const versionEl = shadow.querySelector(".version");
-        if (versionEl) versionEl.textContent = "0.3.261114.0826";
+        if (versionEl) versionEl.textContent = "0.3.261114.0841";
       }
       this.elements.toggle.addEventListener("click", () => actions.onToggleRecording());
       this.elements.updateReload.addEventListener("click", () => {
@@ -8704,7 +8736,7 @@
       }
     };
     try {
-      const version = true ? "0.3.261114.0826" : "?";
+      const version = true ? "0.3.261114.0841" : "?";
       push({ t: Date.now(), k: "init", msg: `recorder ${version} @ ${location.host}` });
       window.addEventListener("error", (event) => {
         recordError("error", `${event.message} @${event.filename}:${event.lineno}`);
@@ -8757,7 +8789,7 @@
     const start = async () => {
       try {
         if (typeof console !== "undefined" && console.info) {
-          console.info(`[Stalker Assistant] v${"0.3.261114.0826"} started`);
+          console.info(`[Stalker Assistant] v${"0.3.261114.0841"} started`);
         }
         runtime.panel = new Panel({
           onToggleRecording: () => {
