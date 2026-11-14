@@ -1,7 +1,7 @@
 /* ==UserScript==
 // @name         Stalker Assistant
 // @namespace    local.stalker-assistant
-// @version      0.3.261114.0841
+// @version      0.3.261114.0934
 // @description  Сбор событий, клавиатур и решений в игре «Сталкер» (VK)
 // @match        https://vk.com/*
 // @match        https://vk.ru/*
@@ -654,7 +654,9 @@
   function frontierCells(state) {
     const out = [];
     for (const [key, cell] of Object.entries(state.cells)) {
-      const unscouted = cell.scouted !== null && cell.total !== null && cell.scouted < cell.total;
+      const revealedCount = DIRECTIONS.filter((direction) => cell.revealed[direction] === true).length;
+      const totalKnown = cell.total ?? revealedCount;
+      const unscouted = cell.scouted !== null && cell.total !== null && cell.scouted < cell.total && revealedCount < totalKnown;
       const untried = DIRECTIONS.some((direction) => cell.revealed[direction] && (cell.passes[direction] ?? "untried") === "untried");
       if (unscouted || untried) {
         const coords = key.split(",");
@@ -681,11 +683,12 @@
         const cell = state.cells[key];
         if (!Number.isFinite(cx) || !Number.isFinite(cy) || cell === void 0) continue;
         for (const direction of DIRECTIONS) {
-          if (!cell.revealed[direction]) continue;
           const [dx, dy] = DELTA[direction];
           const nKey = cellKey(cx + dx, cy + dy);
-          if (visited.has(nKey)) continue;
           const neighbor = state.cells[nKey];
+          const edgeKnown = cell.revealed[direction] === true || neighbor?.revealed[OPPOSITE[direction]] === true;
+          if (!edgeKnown) continue;
+          if (visited.has(nKey)) continue;
           if (neighbor === void 0) continue;
           const step = key === start ? direction : firstStep;
           if (targetKeys.has(nKey)) return step;
@@ -714,6 +717,23 @@
     }
     return period(2) || period(3);
   }
+  function revealDirectionsFromButtons(state, keyboard) {
+    if (state === null) return null;
+    const directions = directionButtons(keyboard);
+    if (directions.length === 0) return state;
+    const curKey = cellKey(state.x, state.y);
+    const cur = state.cells[curKey] ?? emptyCell();
+    let changed = false;
+    const revealed = { ...cur.revealed };
+    for (const direction of directions) {
+      if (revealed[direction] !== true) {
+        revealed[direction] = true;
+        changed = true;
+      }
+    }
+    if (!changed) return state;
+    return { ...state, cells: { ...state.cells, [curKey]: { ...cur, revealed } } };
+  }
   function anomalyNextMove(state, keyboard) {
     const texts = flattenButtons(keyboard).map((button) => comparableButtonText2(button.text));
     const has = (needle) => texts.some((text) => text.includes(needle));
@@ -725,15 +745,34 @@
     if (!state?.deaf && (state?.signal ?? 0) >= ANOMALY_MAX_SIGNAL) return null;
     if (has("\u043E\u0431\u044B\u0441\u043A\u0430\u0442\u044C")) return { kind: "search" };
     const directions = directionButtons(keyboard);
-    const cell = state !== null ? state.cells[cellKey(state.x, state.y)] ?? emptyCell() : emptyCell();
-    const cycling = state !== null && isCycling(state.recentMoves);
-    if (state !== null && !cycling && (state.trend === "down" || state.silence)) {
-      const back = state.cameFrom;
+    let view = state;
+    if (state !== null && directions.length > 0) {
+      const curKey = cellKey(state.x, state.y);
+      const cur = state.cells[curKey] ?? emptyCell();
+      let changed = false;
+      const revealed = { ...cur.revealed };
+      for (const direction of directions) {
+        if (revealed[direction] !== true) {
+          revealed[direction] = true;
+          changed = true;
+        }
+      }
+      if (changed) {
+        view = {
+          ...state,
+          cells: { ...state.cells, [curKey]: { ...cur, revealed, visits: cur.visits } }
+        };
+      }
+    }
+    const cell = view !== null ? view.cells[cellKey(view.x, view.y)] ?? emptyCell() : emptyCell();
+    const cycling = view !== null && isCycling(view.recentMoves);
+    if (view !== null && !cycling && (view.trend === "down" || view.silence)) {
+      const back = view.cameFrom;
       if (back !== null && directions.includes(back)) return { kind: "move", direction: back, why: "back" };
     }
-    const partial = state === null || cell.scouted === null || cell.total === null || cell.scouted < cell.total;
-    const knowBolts = state?.bolts !== null && state?.bolts !== void 0;
-    if (canBolt && partial && (state?.boltFails ?? 0) < 2 && (!knowBolts || (state?.bolts ?? 0) > 0)) {
+    const partial = view === null || cell.scouted === null || cell.total === null || cell.scouted < cell.total;
+    const knowBolts = view?.bolts !== null && state?.bolts !== void 0;
+    if (canBolt && partial && (view?.boltFails ?? 0) < 2 && (!knowBolts || (view?.bolts ?? 0) > 0)) {
       return { kind: "bolt" };
     }
     const untried = directions.filter((direction) => (cell.passes[direction] ?? "untried") === "untried");
@@ -746,53 +785,52 @@
       }
       const targetVisited = (direction) => {
         if (visitedFromButtons.has(direction)) return true;
-        if (state === null) return false;
+        if (view === null) return false;
         const [dx, dy] = DELTA[direction];
-        return state.cells[cellKey(state.x + dx, state.y + dy)] !== void 0;
+        return view.cells[cellKey(view.x + dx, view.y + dy)] !== void 0;
       };
-      const moves = state?.recentMoves ?? [];
+      const moves = view?.recentMoves ?? [];
       const oscillating = moves.length >= 2 && moves[moves.length - 1] !== void 0 && moves[moves.length - 2] !== void 0 && moves[moves.length - 2] === OPPOSITE[moves[moves.length - 1]] ? OPPOSITE[moves[moves.length - 1]] : null;
       const targetVisits = (direction) => {
         if (targetVisited(direction)) {
-          if (state === null) return 1;
+          if (view === null) return 1;
           const [dx, dy] = DELTA[direction];
-          return Math.max(1, state.cells[cellKey(state.x + dx, state.y + dy)]?.visits ?? 1);
+          return Math.max(1, view.cells[cellKey(view.x + dx, view.y + dy)]?.visits ?? 1);
         }
         return 0;
       };
       let target = null;
-      if (!cycling && state?.trend === "up" && state.lastMove !== null && untried.includes(state.lastMove) && state.lastMove !== oscillating) {
-        target = state.lastMove;
+      if (!cycling && view?.trend === "up" && view.lastMove !== null && untried.includes(view.lastMove) && view.lastMove !== oscillating) {
+        target = view.lastMove;
       }
       if (target === null) {
         const fresh = untried.filter((direction) => !targetVisited(direction));
         const calm = (fresh.length > 0 ? fresh : untried).filter((direction) => direction !== oscillating);
         const pool = calm.length > 0 ? calm : fresh.length > 0 ? fresh : untried;
         const sorted = [...pool].sort((a, b) => targetVisits(a) - targetVisits(b));
-        const best = sorted[0] ?? null;
-        const bestVisits = best !== null ? targetVisits(best) : Number.MAX_SAFE_INTEGER;
-        const unvisitedPick = sorted.find((direction) => targetVisits(direction) === 0) ?? null;
-        target = unvisitedPick ?? (bestVisits <= 1 ? best : null);
+        target = sorted[0] ?? null;
       }
       if (target !== null) {
         return { kind: "move", direction: target, why: state?.trend === "up" && target === state.lastMove ? "course" : "explore" };
       }
     }
-    if (state !== null) {
-      const step = stepToNearestFrontier(state);
-      if (step !== null && directions.includes(step)) {
+    if (view !== null) {
+      const step = stepToNearestFrontier(view);
+      const movesNow = view.recentMoves;
+      const osc = movesNow.length >= 2 && movesNow[movesNow.length - 1] !== void 0 && movesNow[movesNow.length - 2] !== void 0 && movesNow[movesNow.length - 2] === OPPOSITE[movesNow[movesNow.length - 1]] ? OPPOSITE[movesNow[movesNow.length - 1]] : null;
+      if (step !== null && directions.includes(step) && !(cycling && step === osc)) {
         return { kind: "move", direction: step, why: "frontier" };
       }
     }
     if (cycling && canExit) return { kind: "exit", why: "mirage" };
     const climbing = DIRECTIONS.filter((direction) => directions.includes(direction) && cell.passes[direction] === "up");
     if (climbing.length > 0) {
-      const last = state?.lastMove ?? null;
+      const last = view?.lastMove ?? null;
       const target = last !== null && climbing.includes(last) ? last : climbing[0];
       if (target !== void 0) return { kind: "move", direction: target, why: "course" };
     }
     if (directions.length === 0) {
-      const anyFrontier = state !== null && frontierCells(state).length > 0;
+      const anyFrontier = view !== null && frontierCells(view).length > 0;
       return canExit && !anyFrontier ? { kind: "exit" } : null;
     }
     return null;
@@ -1419,7 +1457,7 @@
       };
     }
     if (!inField) return null;
-    const move = anomalyNextMove(state, keyboard);
+    const move = anomalyNextMove(revealDirectionsFromButtons(state, keyboard), keyboard);
     if (move === null) return null;
     if (move.kind === "search") {
       const search = byText("\u043E\u0431\u044B\u0441\u043A\u0430\u0442\u044C");
@@ -5766,7 +5804,7 @@
       } catch {
         return;
       }
-      const local = "0.3.261114.0841";
+      const local = "0.3.261114.0934";
       if (remote === null || !isNewerVersion(remote, local)) return;
       const firstNotice = this.state.updateAvailable?.remote !== remote;
       this.state.updateAvailable = { remote, local };
@@ -7675,7 +7713,7 @@
       };
       if (true) {
         const versionEl = shadow.querySelector(".version");
-        if (versionEl) versionEl.textContent = "0.3.261114.0841";
+        if (versionEl) versionEl.textContent = "0.3.261114.0934";
       }
       this.elements.toggle.addEventListener("click", () => actions.onToggleRecording());
       this.elements.updateReload.addEventListener("click", () => {
@@ -8736,7 +8774,7 @@
       }
     };
     try {
-      const version = true ? "0.3.261114.0841" : "?";
+      const version = true ? "0.3.261114.0934" : "?";
       push({ t: Date.now(), k: "init", msg: `recorder ${version} @ ${location.host}` });
       window.addEventListener("error", (event) => {
         recordError("error", `${event.message} @${event.filename}:${event.lineno}`);
@@ -8789,7 +8827,7 @@
     const start = async () => {
       try {
         if (typeof console !== "undefined" && console.info) {
-          console.info(`[Stalker Assistant] v${"0.3.261114.0841"} started`);
+          console.info(`[Stalker Assistant] v${"0.3.261114.0934"} started`);
         }
         runtime.panel = new Panel({
           onToggleRecording: () => {
