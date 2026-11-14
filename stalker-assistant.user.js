@@ -1,7 +1,7 @@
 /* ==UserScript==
 // @name         Stalker Assistant
 // @namespace    local.stalker-assistant
-// @version      0.3.261114.0104
+// @version      0.3.261114.0110
 // @description  Сбор событий, клавиатур и решений в игре «Сталкер» (VK)
 // @match        https://vk.com/*
 // @match        https://vk.ru/*
@@ -379,6 +379,24 @@
   }
   function aggressiveSignatureOfButtons(buttons) {
     return [...new Set(buttons.filter((button) => !isContinueButtonText(button)).map((button) => normalizeButtonLabel(button)).filter((text) => text.length > 0))].sort().join("|");
+  }
+  var RULES_KEEP = 400;
+  var RULES_DROP_UNCHOSEN_AFTER_MS = 7 * 24 * 60 * 60 * 1e3;
+  function trimForkRules(rules, now, keep = RULES_KEEP, dropUnchosenAfterMs = RULES_DROP_UNCHOSEN_AFTER_MS) {
+    if (rules.length <= keep) return { rules: [...rules], dropped: 0 };
+    const withChoice = [];
+    const unchosen = [];
+    for (const rule of rules) {
+      if (rule.choice !== null) withChoice.push(rule);
+      else if (now - rule.ts < dropUnchosenAfterMs) unchosen.push(rule);
+    }
+    const byNewest = (a, b) => b.ts - a.ts;
+    withChoice.sort(byNewest);
+    unchosen.sort(byNewest);
+    const keptChosen = withChoice.slice(0, Math.floor(keep / 2));
+    const keptUnchosen = unchosen.slice(0, keep - keptChosen.length);
+    const out = [...keptChosen, ...keptUnchosen];
+    return { rules: out, dropped: rules.length - out.length };
   }
   function mergeDuplicateForkRules(rules) {
     const groups = /* @__PURE__ */ new Map();
@@ -4075,6 +4093,13 @@
   var INIT_WINDOW_MIN_MS = 60 * 60 * 1e3;
   var SEND_TEXT_RESEND_COOLDOWN_MS = 30 * 1e3;
   var INVASION_TRAVEL_MAX_RETRIES = 2;
+  var AUTO_EXPORT_TOTAL_RECORDS = 12e4;
+  var AUTO_EXPORT_KEEP = {
+    raw: 3e4,
+    messages: 2e4,
+    decisions: 8e3,
+    keyboards: 8e3
+  };
   var PENDING_EVENTS_LIMIT = 200;
   var RECOVERY_TTL_MS = 3 * 60 * 1e3;
   var DEFAULT_ANOMALY_TYPES = ["\u0422\u0440\u0430\u043C\u043F\u043B\u0438\u043D", "\u041A\u0430\u0440\u0443\u0441\u0435\u043B\u044C", "\u0413\u0430\u0437\u0438\u0440\u043E\u0432\u043A\u0430"];
@@ -4466,6 +4491,16 @@
           this.noteStorageError(error, "forkRules (\u0441\u043A\u043B\u0435\u0439\u043A\u0430 \u0434\u0443\u0431\u043B\u0435\u0439)");
         }
       }
+      const trimmed = trimForkRules(this.state.forkRules, Date.now());
+      if (trimmed.dropped > 0) {
+        this.state.forkRules = trimmed.rules;
+        try {
+          await setMeta("forkRules", trimmed.rules);
+        } catch (error) {
+          this.noteStorageError(error, "forkRules (\u0433\u0438\u0433\u0438\u0435\u043D\u0430 \u043E\u0431\u044A\u0451\u043C\u0430)");
+        }
+        this.logAuto({ event: "rules-prune", dropped: trimmed.dropped, kept: trimmed.rules.length });
+      }
       const repairedMessages = await repairStoreRecords(
         "messages",
         (message) => typeof message.text === "string" && message.text.length > MAX_MESSAGE_TEXT,
@@ -4567,6 +4602,40 @@
       this.relogPageReloadMarkers();
       this.relogStashedDiagnostics();
       void this.pruneLogs();
+      window.setTimeout(() => {
+        void this.maybeAutoExport();
+      }, 3e4);
+    }
+    /**
+     * Авто-выгрузка и очистка при выходе объёма за безопасный предел: сначала
+     * скачивается полный экспорт JSONL (архив; загрузка может быть заблокирована
+     * браузером без недавнего клика — тогда чистим всё равно), затем старейшее
+     * подрезается до AUTO_EXPORT_KEEP (события auto-export / auto-export-pruned).
+     */
+    async maybeAutoExport() {
+      try {
+        const stores = ["raw", "messages", "decisions", "keyboards"];
+        const counts = await Promise.all(stores.map((store) => countStore(store)));
+        const total = counts.reduce((sum, count) => sum + count, 0);
+        if (total < AUTO_EXPORT_TOTAL_RECORDS) return;
+        const detail = {};
+        stores.forEach((store, index) => {
+          detail[store] = counts[index] ?? 0;
+        });
+        this.logAuto({ event: "auto-export", total, ...detail });
+        try {
+          await exportJsonl();
+        } catch (error) {
+          this.reportError(error, "\u0430\u0432\u0442\u043E-\u0432\u044B\u0433\u0440\u0443\u0437\u043A\u0430 (\u0430\u0440\u0445\u0438\u0432 \u043D\u0435 \u0441\u043A\u0430\u0447\u0430\u043B\u0441\u044F \u2014 \u0447\u0438\u0441\u0442\u0438\u043C \u0432\u0441\u0451 \u0440\u0430\u0432\u043D\u043E)");
+        }
+        for (const store of stores) {
+          await pruneStore(store, AUTO_EXPORT_KEEP[store] ?? 8e3);
+        }
+        this.logAuto({ event: "auto-export-pruned" });
+        this.refreshCountsSoon();
+      } catch (error) {
+        this.reportError(error, "\u0430\u0432\u0442\u043E-\u0432\u044B\u0433\u0440\u0443\u0437\u043A\u0430/\u043E\u0447\u0438\u0441\u0442\u043A\u0430");
+      }
     }
     /**
      * Ретеншен логов: сырые события старше RAW_RETENTION_MS, сообщения/решения/
@@ -5662,7 +5731,7 @@
       } catch {
         return;
       }
-      const local = "0.3.261114.0104";
+      const local = "0.3.261114.0110";
       if (remote === null || !isNewerVersion(remote, local)) return;
       const firstNotice = this.state.updateAvailable?.remote !== remote;
       this.state.updateAvailable = { remote, local };
@@ -7566,7 +7635,7 @@
       };
       if (true) {
         const versionEl = shadow.querySelector(".version");
-        if (versionEl) versionEl.textContent = "0.3.261114.0104";
+        if (versionEl) versionEl.textContent = "0.3.261114.0110";
       }
       this.elements.toggle.addEventListener("click", () => actions.onToggleRecording());
       this.elements.updateReload.addEventListener("click", () => {
@@ -8627,7 +8696,7 @@
       }
     };
     try {
-      const version = true ? "0.3.261114.0104" : "?";
+      const version = true ? "0.3.261114.0110" : "?";
       push({ t: Date.now(), k: "init", msg: `recorder ${version} @ ${location.host}` });
       window.addEventListener("error", (event) => {
         recordError("error", `${event.message} @${event.filename}:${event.lineno}`);
@@ -8680,7 +8749,7 @@
     const start = async () => {
       try {
         if (typeof console !== "undefined" && console.info) {
-          console.info(`[Stalker Assistant] v${"0.3.261114.0104"} started`);
+          console.info(`[Stalker Assistant] v${"0.3.261114.0110"} started`);
         }
         runtime.panel = new Panel({
           onToggleRecording: () => {
