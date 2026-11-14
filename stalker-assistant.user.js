@@ -1,7 +1,7 @@
 /* ==UserScript==
 // @name         Stalker Assistant
 // @namespace    local.stalker-assistant
-// @version      0.3.261114.1101
+// @version      0.3.261114.1115
 // @description  Сбор событий, клавиатур и решений в игре «Сталкер» (VK)
 // @match        https://vk.com/*
 // @match        https://vk.ru/*
@@ -943,6 +943,7 @@
   var RIFT_TEXT_RE = /(?:Вы обнаружили Разлом|перед вами Разлом)/u;
   var HELICOPTER_TEXT_RE = /военный вертол[её]т/u;
   var HELICOPTER_DURATION_RE = /каждый по\s*(\d+)\s*мин(?:\s*(\d+)\s*с)?/iu;
+  var HELICOPTER_APPROACHES_RE = /Подходов:\s*(\d+)/u;
   var CACHE_TEXT_RE = /Обыск займ[её]т/u;
   var CACHE_DURATION_RE = /Обыск займ[её]т\s*(\d+)\s*мин(?:\s*(\d+)\s*с)?/iu;
   function isRiftText(text) {
@@ -957,7 +958,8 @@
     if (match === null) return 5 * 6e4 + HELICOPTER_WAIT_SLACK_MS;
     const minutes = Number(match[1] ?? 0);
     const seconds = Number(match[2] ?? 0);
-    return (minutes * 60 + seconds) * 1e3 + HELICOPTER_WAIT_SLACK_MS;
+    const approaches = Number(HELICOPTER_APPROACHES_RE.exec(text)?.[1] ?? 1);
+    return (minutes * 60 + seconds) * 1e3 * Math.max(1, approaches) + HELICOPTER_WAIT_SLACK_MS;
   }
   function isCacheSearchText(text) {
     return CACHE_TEXT_RE.test(text) && !isHelicopterText(text);
@@ -5978,7 +5980,7 @@
       } catch {
         return;
       }
-      const local = "0.3.261114.1101";
+      const local = "0.3.261114.1115";
       if (remote === null || !isNewerVersion(remote, local)) return;
       const firstNotice = this.state.updateAvailable?.remote !== remote;
       this.state.updateAvailable = { remote, local };
@@ -7899,7 +7901,7 @@
       };
       if (true) {
         const versionEl = shadow.querySelector(".version");
-        if (versionEl) versionEl.textContent = "0.3.261114.1101";
+        if (versionEl) versionEl.textContent = "0.3.261114.1115";
       }
       this.elements.toggle.addEventListener("click", () => actions.onToggleRecording());
       this.elements.updateReload.addEventListener("click", () => {
@@ -8972,7 +8974,7 @@
       }
     };
     try {
-      const version = true ? "0.3.261114.1101" : "?";
+      const version = true ? "0.3.261114.1115" : "?";
       push({ t: Date.now(), k: "init", msg: `recorder ${version} @ ${location.host}` });
       window.addEventListener("error", (event) => {
         recordError("error", `${event.message} @${event.filename}:${event.lineno}`);
@@ -9025,7 +9027,7 @@
     const start = async () => {
       try {
         if (typeof console !== "undefined" && console.info) {
-          console.info(`[Stalker Assistant] v${"0.3.261114.1101"} started`);
+          console.info(`[Stalker Assistant] v${"0.3.261114.1115"} started`);
         }
         runtime.panel = new Panel({
           onToggleRecording: () => {
