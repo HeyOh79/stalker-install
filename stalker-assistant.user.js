@@ -1,7 +1,7 @@
 /* ==UserScript==
 // @name         Stalker Assistant
 // @namespace    local.stalker-assistant
-// @version      0.3.261113.1518
+// @version      0.3.261114.0104
 // @description  Сбор событий, клавиатур и решений в игре «Сталкер» (VK)
 // @match        https://vk.com/*
 // @match        https://vk.ru/*
@@ -2718,12 +2718,13 @@
   }
 
   // src/storage/export.ts
-  var EXPORT_STORES = ["raw", "messages", "decisions", "keyboards"];
+  var EXPORT_STORES = ["raw", "messages", "decisions", "keyboards", "meta"];
   var EXPORT_KEEP = {
     raw: 5e3,
     messages: 1e4,
     decisions: 5e3,
-    keyboards: 5e3
+    keyboards: 5e3,
+    meta: 100
   };
   async function exportJsonl() {
     let count = 0;
@@ -5661,7 +5662,7 @@
       } catch {
         return;
       }
-      const local = "0.3.261113.1518";
+      const local = "0.3.261114.0104";
       if (remote === null || !isNewerVersion(remote, local)) return;
       const firstNotice = this.state.updateAvailable?.remote !== remote;
       this.state.updateAvailable = { remote, local };
@@ -7161,7 +7162,7 @@
     auto: "\u0410\u0432\u0442\u043E"
   };
   var MODE_ORDER = ["observe", "advice", "auto"];
-  var Panel = class {
+  var Panel = class _Panel {
     elements;
     actions;
     mode = "observe";
@@ -7565,7 +7566,7 @@
       };
       if (true) {
         const versionEl = shadow.querySelector(".version");
-        if (versionEl) versionEl.textContent = "0.3.261113.1518";
+        if (versionEl) versionEl.textContent = "0.3.261114.0104";
       }
       this.elements.toggle.addEventListener("click", () => actions.onToggleRecording());
       this.elements.updateReload.addEventListener("click", () => {
@@ -7648,6 +7649,10 @@
       this.elements.mapWindow.classList.toggle("open", open === "map");
       this.elements.mapBtn.classList.toggle("window-open", open === "map");
       if (open === "map" && this.lastState !== null) this.renderMap(this.lastState);
+      if (open === "rules" && this.lastState !== null) {
+        this.lastRulesJson = "";
+        this.renderRules(this.lastState);
+      }
       this.elements.delaysButton.classList.toggle("window-open", open === "delays");
       this.elements.rulesButton.classList.toggle("window-open", open === "rules");
     }
@@ -7745,7 +7750,11 @@
       this.renderTactics(state);
       this.renderRules(state);
     }
+    /** Правила: столько записей и кнопок на запись рисуем в окне (антифриз). */
+    static RULES_RENDER_CAP = 200;
+    static RULE_BUTTONS_CAP = 10;
     renderRules(state) {
+      if (this.openWindowName !== "rules") return;
       this.renderEventRules(state.eventRules);
       this.renderAnomalyTypes(state);
       const json = JSON.stringify(state.forkRules);
@@ -7761,8 +7770,15 @@
         return;
       }
       const sorted = [...state.forkRules].sort((a, b) => b.ts - a.ts);
-      for (const rule of sorted) {
+      const shown = sorted.slice(0, _Panel.RULES_RENDER_CAP);
+      for (const rule of shown) {
         list.appendChild(this.ruleItem(rule));
+      }
+      if (sorted.length > shown.length) {
+        const more = document.createElement("div");
+        more.className = "rules-empty";
+        more.textContent = "\u041F\u043E\u043A\u0430\u0437\u0430\u043D\u044B \u043F\u043E\u0441\u043B\u0435\u0434\u043D\u0438\u0435 " + shown.length + " \u0438\u0437 " + sorted.length + " \u2014 \u043E\u0441\u0442\u0430\u043B\u044C\u043D\u044B\u0435 \u0441\u0442\u0430\u0440\u0435\u0435.";
+        list.appendChild(more);
       }
     }
     /** Секция «События»: действия для аномалии и разлома (meta `eventRules`). */
@@ -7893,7 +7909,7 @@
       const desc = document.createElement("span");
       desc.className = "rule-desc";
       desc.textContent = describeFork(rule);
-      desc.title = rule.buttons.join(" / ");
+      desc.title = rule.buttons.slice(0, _Panel.RULE_BUTTONS_CAP).join(" / ");
       const count = document.createElement("span");
       count.className = "rule-count";
       count.textContent = `\xD7${rule.count}`;
@@ -7909,13 +7925,21 @@
       current.textContent = rule.choice ? `\u0421\u0435\u0439\u0447\u0430\u0441: ${rule.choice}` : "\u0412\u044B\u0431\u043E\u0440 \u043D\u0435 \u0437\u0430\u0434\u0430\u043D \u2014 \u0430\u0432\u0442\u043E-\u0440\u0435\u0436\u0438\u043C \u0441\u043F\u0440\u043E\u0441\u0438\u0442.";
       const buttons = document.createElement("div");
       buttons.className = "rule-buttons";
-      for (const text of rule.buttons) {
+      const shownButtons = rule.buttons.slice(0, _Panel.RULE_BUTTONS_CAP);
+      for (const text of shownButtons) {
         const button = document.createElement("button");
         button.type = "button";
-        button.textContent = text;
+        button.textContent = text.length > 32 ? text.slice(0, 32) + "\u2026" : text;
+        button.title = text;
         if (rule.choice === text) button.classList.add("chosen");
         button.addEventListener("click", () => this.actions.onForkRuleChoice(rule.signature, text));
         buttons.appendChild(button);
+      }
+      if (rule.buttons.length > shownButtons.length) {
+        const more = document.createElement("span");
+        more.className = "rule-count";
+        more.textContent = "+" + (rule.buttons.length - shownButtons.length);
+        buttons.appendChild(more);
       }
       const ask = document.createElement("button");
       ask.type = "button";
@@ -8603,7 +8627,7 @@
       }
     };
     try {
-      const version = true ? "0.3.261113.1518" : "?";
+      const version = true ? "0.3.261114.0104" : "?";
       push({ t: Date.now(), k: "init", msg: `recorder ${version} @ ${location.host}` });
       window.addEventListener("error", (event) => {
         recordError("error", `${event.message} @${event.filename}:${event.lineno}`);
@@ -8656,7 +8680,7 @@
     const start = async () => {
       try {
         if (typeof console !== "undefined" && console.info) {
-          console.info(`[Stalker Assistant] v${"0.3.261113.1518"} started`);
+          console.info(`[Stalker Assistant] v${"0.3.261114.0104"} started`);
         }
         runtime.panel = new Panel({
           onToggleRecording: () => {
