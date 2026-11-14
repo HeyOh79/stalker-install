@@ -1,7 +1,7 @@
 /* ==UserScript==
 // @name         Stalker Assistant
 // @namespace    local.stalker-assistant
-// @version      0.3.261114.0945
+// @version      0.3.261114.1020
 // @description  Сбор событий, клавиатур и решений в игре «Сталкер» (VK)
 // @match        https://vk.com/*
 // @match        https://vk.ru/*
@@ -1283,6 +1283,11 @@
     }
     return { kind: "anomaly", title: "\u0410\u043D\u043E\u043C\u0430\u043B\u0438\u044F: \u043E\u0431\u0445\u043E\u0434\u0438\u043C", note: `${note} \u0416\u0434\u0451\u043C \u043A\u043D\u043E\u043F\u043A\u0443 \xAB\u0423\u0439\u0442\u0438\xBB.`, button: null, hold: true, ts };
   }
+  function screenEntryLimits(text, fallback) {
+    const parsed = entryLimitsFrom(text);
+    if (parsed.personal !== null || parsed.bonus !== null) return parsed;
+    return fallback ?? null;
+  }
   function anomalyAdvice(keyboard, text, ts, state, events, exitWish, typeRules, limits, bolts) {
     const buttons = flattenButtons(keyboard);
     const byText = (needle) => buttons.find((button) => comparableText(button).includes(needle)) ?? null;
@@ -1734,7 +1739,7 @@
     const text = rawText;
     if (!keyboard) {
       if (ENTRY_SCREEN_RE.test(input.text)) {
-        const limits = options?.anomalyLimits ?? null;
+        const limits = screenEntryLimits(input.text, options?.anomalyLimits);
         const bolts = options?.anomalyBolts ?? null;
         const boltsKnown = bolts?.count ?? null;
         const typeName = entryAnomalyName(input.text);
@@ -1891,7 +1896,7 @@
         options?.events,
         options?.anomalyExit === true,
         options?.anomalyTypeRules ?? null,
-        options?.anomalyLimits ?? null,
+        screenEntryLimits(text, options?.anomalyLimits),
         options?.anomalyBolts ?? null
       );
       if (anomaly) return anomaly;
@@ -5811,7 +5816,7 @@
       } catch {
         return;
       }
-      const local = "0.3.261114.0945";
+      const local = "0.3.261114.1020";
       if (remote === null || !isNewerVersion(remote, local)) return;
       const firstNotice = this.state.updateAvailable?.remote !== remote;
       this.state.updateAvailable = { remote, local };
@@ -7720,7 +7725,7 @@
       };
       if (true) {
         const versionEl = shadow.querySelector(".version");
-        if (versionEl) versionEl.textContent = "0.3.261114.0945";
+        if (versionEl) versionEl.textContent = "0.3.261114.1020";
       }
       this.elements.toggle.addEventListener("click", () => actions.onToggleRecording());
       this.elements.updateReload.addEventListener("click", () => {
@@ -8781,7 +8786,7 @@
       }
     };
     try {
-      const version = true ? "0.3.261114.0945" : "?";
+      const version = true ? "0.3.261114.1020" : "?";
       push({ t: Date.now(), k: "init", msg: `recorder ${version} @ ${location.host}` });
       window.addEventListener("error", (event) => {
         recordError("error", `${event.message} @${event.filename}:${event.lineno}`);
@@ -8834,7 +8839,7 @@
     const start = async () => {
       try {
         if (typeof console !== "undefined" && console.info) {
-          console.info(`[Stalker Assistant] v${"0.3.261114.0945"} started`);
+          console.info(`[Stalker Assistant] v${"0.3.261114.1020"} started`);
         }
         runtime.panel = new Panel({
           onToggleRecording: () => {
