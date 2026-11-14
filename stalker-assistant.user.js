@@ -1,7 +1,7 @@
 /* ==UserScript==
 // @name         Stalker Assistant
 // @namespace    local.stalker-assistant
-// @version      0.3.261114.1020
+// @version      0.3.261114.1044
 // @description  Сбор событий, клавиатур и решений в игре «Сталкер» (VK)
 // @match        https://vk.com/*
 // @match        https://vk.ru/*
@@ -2860,6 +2860,66 @@
     return count;
   }
 
+  // src/storage/external.ts
+  function canUseExternalLogs() {
+    return typeof window !== "undefined" && typeof window.showDirectoryPicker === "function";
+  }
+  async function pickExternalDirectory() {
+    const picker = window.showDirectoryPicker;
+    if (typeof picker !== "function") return null;
+    try {
+      return await picker({ id: "stalker-logs", mode: "readwrite" });
+    } catch {
+      return null;
+    }
+  }
+  async function ensureWritePermission(dir) {
+    if (typeof dir.queryPermission !== "function") return true;
+    const state = await dir.queryPermission({ mode: "readwrite" });
+    return state === "granted";
+  }
+  async function requestWritePermission(dir) {
+    if (typeof dir.requestPermission !== "function") return true;
+    const state = await dir.requestPermission({ mode: "readwrite" });
+    return state === "granted";
+  }
+  function dailyLogFileName(ts) {
+    const d = new Date(ts);
+    const pad = (v) => String(v).padStart(2, "0");
+    return `stalker-${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}.jsonl`;
+  }
+  var SAFE_NAME_RE = /[^\p{L}\p{N}._-]+/gu;
+  function fieldDumpFileName(ts, typeName) {
+    const d = new Date(ts);
+    const pad = (v) => String(v).padStart(2, "0");
+    const stamp = `${String(d.getFullYear()).slice(2)}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
+    const safe = (typeName ?? "\u0430\u043D\u043E\u043C\u0430\u043B\u0438\u044F").replace(SAFE_NAME_RE, "_").slice(0, 24);
+    return `field-${stamp}-${safe}.json`;
+  }
+  async function appendToFile(dir, fileName, text) {
+    try {
+      const file = await dir.getFileHandle(fileName, { create: true });
+      const size = (await file.getFile()).size;
+      const writable = await file.createWritable({ keepExistingData: true });
+      await writable.write({ type: "write", position: size, data: text });
+      await writable.close();
+      return true;
+    } catch {
+      return false;
+    }
+  }
+  async function appendToFileInSubdir(dir, subdir, fileName, text) {
+    try {
+      const sub = await dir.getDirectoryHandle(subdir, { create: true });
+      return await appendToFile(sub, fileName, text);
+    } catch {
+      return false;
+    }
+  }
+  function jsonlLine(record, store) {
+    return JSON.stringify({ ...record, type: store });
+  }
+
   // src/vk/location.ts
   function currentPeerFromLocation() {
     try {
@@ -4175,6 +4235,11 @@
   var INIT_DECISIONS_CAP = 8e3;
   var INIT_WINDOW_MIN_MS = 60 * 60 * 1e3;
   var SEND_TEXT_RESEND_COOLDOWN_MS = 30 * 1e3;
+  var EXT_LOG_PUMP_MS = 60 * 1e3;
+  var EXT_LOG_HEALTHY_MS = 15 * 60 * 1e3;
+  var RAW_RETENTION_EXT_MS = 2 * 24 * 60 * 60 * 1e3;
+  var DATA_RETENTION_EXT_MS = 3 * 24 * 60 * 60 * 1e3;
+  var EXT_LOG_STORES = ["raw", "messages", "decisions", "keyboards"];
   var INVASION_TRAVEL_MAX_RETRIES = 2;
   var AUTO_EXPORT_TOTAL_RECORDS = 12e4;
   var AUTO_EXPORT_KEEP = {
@@ -4209,6 +4274,7 @@
       anomalyEntryPaused: false,
       anomalyBolts: null,
       invasionEnabled: false,
+      extLogLastOkAt: 0,
       invasionPhase: "idle",
       invasionStage: 0,
       mapTravel: null,
@@ -4341,6 +4407,13 @@
     battleKeyboards = [];
     /** Состояние навигатора поля аномалии по каждому чату. */
     anomalyStates = /* @__PURE__ */ new Map();
+    /** Внешнее хранилище логов: папка (handle в meta), курсор помпы, здоровье. */
+    extLogDir = null;
+    extLogCursor = {};
+    extLogLastOkAt = 0;
+    extLogTimer = null;
+    /** Буфер текущего поля аномалии: тексты+кнопки для дампа при выходе. */
+    fieldBufferByPeer = /* @__PURE__ */ new Map();
     /** Последний известный счётчик болтов из шапок поля («У вас N болтов»). */
     anomalyBoltsByPeer = /* @__PURE__ */ new Map();
     /** Вход в новые аномалии приостановлен: после поля с болтами < порога —
@@ -4690,6 +4763,88 @@
       window.setTimeout(() => {
         void this.maybeAutoExport();
       }, 3e4);
+      try {
+        const dir = await getMeta("extLogDir", null);
+        if (dir !== null && typeof dir.getFileHandle === "function") this.extLogDir = dir;
+      } catch {
+      }
+      this.extLogCursor = await getMeta("extLogCursor", {});
+      this.extLogLastOkAt = await getMeta("extLogLastOkAt", 0);
+      this.state.extLogLastOkAt = this.extLogLastOkAt;
+      if (this.extLogTimer === null && this.extLogDir !== null) {
+        this.extLogTimer = window.setInterval(() => {
+          void this.pumpExternalLogs();
+        }, EXT_LOG_PUMP_MS);
+      }
+    }
+    /** Кнопка панели «Внешние логи»: выбрать папку и запросить право записи. */
+    async pickExternalLogDir() {
+      if (!canUseExternalLogs()) {
+        this.reportError(new Error("\u0411\u0440\u0430\u0443\u0437\u0435\u0440 \u043D\u0435 \u043F\u043E\u0434\u0434\u0435\u0440\u0436\u0438\u0432\u0430\u0435\u0442 \u0432\u044B\u0431\u043E\u0440 \u043F\u0430\u043F\u043A\u0438 (\u043D\u0443\u0436\u0435\u043D Chrome/Edge)"), "\u0432\u043D\u0435\u0448\u043D\u0438\u0435 \u043B\u043E\u0433\u0438");
+        return;
+      }
+      const dir = await pickExternalDirectory();
+      if (dir === null) return;
+      this.extLogDir = dir;
+      await setMeta("extLogDir", dir);
+      if (!await ensureWritePermission(dir) && !await requestWritePermission(dir)) {
+        this.reportError(new Error("\u041F\u0430\u043F\u043A\u0430 \u0432\u044B\u0431\u0440\u0430\u043D\u0430, \u043D\u043E \u0437\u0430\u043F\u0438\u0441\u044C \u043D\u0435 \u0440\u0430\u0437\u0440\u0435\u0448\u0435\u043D\u0430 \u2014 \u043D\u0430\u0436\u043C\u0438 \u043A\u043D\u043E\u043F\u043A\u0443 \u0435\u0449\u0451 \u0440\u0430\u0437"), "\u0432\u043D\u0435\u0448\u043D\u0438\u0435 \u043B\u043E\u0433\u0438");
+        return;
+      }
+      await this.pumpExternalLogs(true);
+      this.panel?.update(this.state);
+    }
+    /** Помпа: новые записи сторов (ts > курсора) дописываются в дневной файл. */
+    async pumpExternalLogs(force = false) {
+      const dir = this.extLogDir;
+      if (dir === null) return;
+      if (!force && !this.state.isGameChat) return;
+      if (!await ensureWritePermission(dir)) return;
+      try {
+        const lines = [];
+        for (const store of EXT_LOG_STORES) {
+          const since = this.extLogCursor[store] ?? Date.now() - 36e5;
+          const records = await getAllSince(store, since + 1);
+          let maxTs = since;
+          for (const record of records) {
+            const ts = record.ts ?? since;
+            if (ts > maxTs) maxTs = ts;
+            lines.push(jsonlLine(record, store));
+          }
+          this.extLogCursor[store] = maxTs;
+        }
+        if (lines.length > 0) {
+          const ok = await appendToFile(dir, dailyLogFileName(Date.now()), lines.join("\n") + "\n");
+          if (!ok) return;
+        }
+        this.extLogLastOkAt = Date.now();
+        this.state.extLogLastOkAt = this.extLogLastOkAt;
+        await setMeta("extLogCursor", this.extLogCursor);
+        await setMeta("extLogLastOkAt", this.extLogLastOkAt);
+      } catch (error) {
+        this.reportError(error, "\u0432\u043D\u0435\u0448\u043D\u0438\u0435 \u043B\u043E\u0433\u0438: \u043F\u043E\u043C\u043F\u0430");
+      }
+    }
+    /** Дамп пройденного поля: карта + полная последовательность текстов. */
+    async dumpAnomalyField(peerId, reason) {
+      const dir = this.extLogDir;
+      const buffer = this.fieldBufferByPeer.get(peerId) ?? [];
+      const state = this.anomalyStates.get(peerId) ?? null;
+      this.fieldBufferByPeer.delete(peerId);
+      if (dir === null || buffer.length === 0) return;
+      if (!await ensureWritePermission(dir)) return;
+      const typeName = entryAnomalyName(buffer[0]?.text ?? "");
+      const dump = {
+        dumpedAt: (/* @__PURE__ */ new Date()).toISOString(),
+        endedReason: reason,
+        type: typeName,
+        cells: state?.cells ?? null,
+        position: state !== null ? { x: state.x, y: state.y } : null,
+        recentMoves: state?.recentMoves ?? [],
+        sequence: buffer
+      };
+      const ok = await appendToFileInSubdir(dir, "fields", fieldDumpFileName(Date.now(), typeName), JSON.stringify(dump, null, 1));
+      this.logAuto({ event: "field-dump", reason, rooms: buffer.length, ok });
     }
     /**
      * Авто-выгрузка и очистка при выходе объёма за безопасный предел: сначала
@@ -4732,10 +4887,13 @@
     async pruneLogs() {
       try {
         const now = Date.now();
-        const raw = await pruneStoreBefore("raw", now - RAW_RETENTION_MS);
-        let messages = await pruneStoreBefore("messages", now - DATA_RETENTION_MS);
-        let decisions = await pruneStoreBefore("decisions", now - DATA_RETENTION_MS);
-        let keyboards = await pruneStoreBefore("keyboards", now - DATA_RETENTION_MS);
+        const extHealthy = this.extLogLastOkAt > 0 && now - this.extLogLastOkAt < EXT_LOG_HEALTHY_MS;
+        const rawKeep = extHealthy ? RAW_RETENTION_EXT_MS : RAW_RETENTION_MS;
+        const dataKeep = extHealthy ? DATA_RETENTION_EXT_MS : DATA_RETENTION_MS;
+        const raw = await pruneStoreBefore("raw", now - rawKeep);
+        let messages = await pruneStoreBefore("messages", now - dataKeep);
+        let decisions = await pruneStoreBefore("decisions", now - dataKeep);
+        let keyboards = await pruneStoreBefore("keyboards", now - dataKeep);
         if (await countStore("messages") > DATA_MESSAGES_KEEP_MAX) {
           messages += await pruneStore("messages", DATA_MESSAGES_KEEP_MAX);
         }
@@ -5816,7 +5974,7 @@
       } catch {
         return;
       }
-      const local = "0.3.261114.1020";
+      const local = "0.3.261114.1044";
       if (remote === null || !isNewerVersion(remote, local)) return;
       const firstNotice = this.state.updateAvailable?.remote !== remote;
       this.state.updateAvailable = { remote, local };
@@ -6199,6 +6357,11 @@
               this.lastInlineKeyboard.delete(message.peerId);
             }
           }
+          if (fresh && message.text && this.anomalyStates.has(message.peerId)) {
+            const fieldBuffer = this.fieldBufferByPeer.get(message.peerId) ?? [];
+            fieldBuffer.push({ ts: message.ts, text: message.text, buttons: message.keyboard ? message.keyboard.buttons.flat().map((b) => b.text) : [] });
+            this.fieldBufferByPeer.set(message.peerId, fieldBuffer);
+          }
           if (fresh && message.text && isAnomalyFieldText(message.text)) {
             this.anomalyStates.set(message.peerId, updateAnomalyState(this.anomalyStates.get(message.peerId) ?? null, message.text, message.conversationMessageId));
             const updatedAnomaly = this.anomalyStates.get(message.peerId);
@@ -6222,6 +6385,9 @@
                 this.anomalyStates.delete(message.peerId);
                 this.logAuto({ event: "anomaly-reset", reason: reset });
               }
+            }
+            if (reset !== null && reset !== "picked" && reset !== "enter") {
+              void this.dumpAnomalyField(message.peerId, reset);
             }
             if (reset === "left" || reset === "enter") this.maybePauseAnomalyEntry(message.peerId);
             if (reset === "left" || reset === "enter") this.anomalyExitByPeer.delete(message.peerId);
@@ -7539,6 +7705,8 @@
         <div class="row"><span>\u0421\u0442\u0440\u0430\u0436 HP (\u0430\u043D\u043E\u043C\u0430\u043B\u0438\u044F)</span><button class="hp-guard toggle" type="button" title="\u0415\u0441\u043B\u0438 \u0432 \u043F\u043E\u043B\u0435 \u0430\u043D\u043E\u043C\u0430\u043B\u0438\u0438 \u0437\u0434\u043E\u0440\u043E\u0432\u044C\u0435 \u043F\u0430\u0434\u0430\u0435\u0442 \u0434\u043E 25% \u0438 \u043D\u0438\u0436\u0435, \u0430\u0432\u0442\u043E \u043F\u0435\u0440\u0435\u0441\u0442\u0430\u0451\u0442 \u0443\u0433\u043B\u0443\u0431\u043B\u044F\u0442\u044C\u0441\u044F \u0438 \u0432\u044B\u0445\u043E\u0434\u0438\u0442 \u0438\u0437 \u0430\u043D\u043E\u043C\u0430\u043B\u0438\u0438 \u2014 \u0434\u043E\u0431\u0438\u0440\u0430\u0442\u044C \u0430\u0440\u0442\u0435\u0444\u0430\u043A\u0442 \u043F\u0440\u0438 \u0442\u0430\u043A\u043E\u043C HP \u0440\u0438\u0441\u043A\u043E\u0432\u0430\u043D\u043D\u043E.">\u0432\u044B\u043A\u043B</button></div>
         <div class="row"><span>\u0427\u0430\u0442</span><b class="peer">\u2014</b></div>
         <div class="row"><span>\u0421\u0430\u0434\u043E\u043A</span><b class="garden">\u2014</b></div>
+        <div class="row"><span>\u0412\u043D\u0435\u0448\u043D\u0438\u0435 \u043B\u043E\u0433\u0438</span><button class="extlog toggle" type="button" title="\u0412\u044B\u0431\u0440\u0430\u0442\u044C \u043F\u0430\u043F\u043A\u0443 \u0432 \u0434\u043E\u043C\u0430\u0448\u043D\u0435\u0439 \u0434\u0438\u0440\u0435\u043A\u0442\u043E\u0440\u0438\u0438: \u0441\u043A\u0440\u0438\u043F\u0442 \u0441\u0430\u043C \u0434\u043E\u043F\u0438\u0441\u044B\u0432\u0430\u0435\u0442 \u0442\u0443\u0434\u0430 \u0434\u043D\u0435\u0432\u043D\u044B\u0435 \u0444\u0430\u0439\u043B\u044B \u043B\u043E\u0433\u043E\u0432 \u0438 \u043A\u0430\u0440\u0442\u044B \u043F\u0440\u043E\u0439\u0434\u0435\u043D\u043D\u044B\u0445 \u0430\u043D\u043E\u043C\u0430\u043B\u0438\u0439 (fields/), \u0430 \u0431\u0430\u0437\u0443 \u0431\u0440\u0430\u0443\u0437\u0435\u0440\u0430 \u0434\u0435\u0440\u0436\u0438\u0442 \u043A\u043E\u0440\u043E\u0442\u043A\u043E\u0439. Chrome \u0437\u0430\u043F\u043E\u043C\u043D\u0438\u0442 \u0440\u0430\u0437\u0440\u0435\u0448\u0435\u043D\u0438\u0435 \u0437\u0430\u043F\u0438\u0441\u0438.">\u0432\u044B\u0431\u0440\u0430\u0442\u044C \u043F\u0430\u043F\u043A\u0443</button></div>
+        <div class="extlog-note" style="display:none;margin:2px 0 6px;font-size:10px;color:#8fa3b8"></div>
         <div class="row"><span>\u0421\u043E\u043E\u0431\u0449\u0435\u043D\u0438\u044F</span><b class="messages">0</b></div>
         <div class="row"><span>\u0420\u0435\u0448\u0435\u043D\u0438\u044F</span><b class="decisions">0</b></div>
         <div class="row"><span>\u041A\u043B\u0430\u0432\u0438\u0430\u0442\u0443\u0440\u044B</span><b class="keyboards">0</b></div>
@@ -7682,6 +7850,8 @@
         hpGuard: get(".hp-guard"),
         peer: get(".peer"),
         garden: get(".garden"),
+        extLog: get(".extlog"),
+        extLogNote: get(".extlog-note"),
         messages: get(".messages"),
         decisions: get(".decisions"),
         keyboards: get(".keyboards"),
@@ -7725,7 +7895,7 @@
       };
       if (true) {
         const versionEl = shadow.querySelector(".version");
-        if (versionEl) versionEl.textContent = "0.3.261114.1020";
+        if (versionEl) versionEl.textContent = "0.3.261114.1044";
       }
       this.elements.toggle.addEventListener("click", () => actions.onToggleRecording());
       this.elements.updateReload.addEventListener("click", () => {
@@ -7749,6 +7919,9 @@
       });
       this.elements.autoExpand.addEventListener("change", () => {
         this.actions.onToggleBattleAutoExpand(this.elements.autoExpand.checked);
+      });
+      this.elements.extLog.addEventListener("click", () => {
+        void actions.onExtLogPick();
       });
       this.elements.gardenSell.addEventListener("click", () => {
         this.actions.onToggleGardenAutoSell(this.elements.gardenSell.textContent !== "\u0432\u043A\u043B");
@@ -7892,6 +8065,15 @@
       this.elements.garden.textContent = slots ? `${slots.current}/${slots.limit}` : "\u2014";
       this.elements.garden.title = slots ? slots.current >= slots.limit ? `\u0421\u0430\u0434\u043E\u043A \u043F\u043E\u043B\u043E\u043D \u2014 \u0440\u044B\u0431\u0430 \u043E\u0442\u043F\u0443\u0441\u043A\u0430\u0435\u0442\u0441\u044F${state.gardenAutoSell ? ", \u0430\u0432\u0442\u043E \u043F\u0440\u043E\u0434\u0430\u0441\u0442 \u043A\u043E\u043C\u0430\u043D\u0434\u043E\u0439 \xAB\u041F\u0440\u043E\u0434\u0430\u0442\u044C \u0432\u0441\u044E \u0440\u044B\u0431\u0443\xBB" : ""}` : "\u041C\u0435\u0441\u0442 \u0432 \u0441\u0430\u0434\u043A\u0435" : "\u041F\u043E\u044F\u0432\u0438\u0442\u0441\u044F \u0441 \u043F\u0435\u0440\u0432\u044B\u043C \u0443\u043B\u043E\u0432\u043E\u043C";
       this.elements.garden.classList.toggle("full", slots !== null && slots.current >= slots.limit);
+      const extOk = state.extLogLastOkAt ?? 0;
+      if (extOk > 0 && Date.now() - extOk < 15 * 60 * 1e3) {
+        this.elements.extLogNote.style.display = "block";
+        this.elements.extLogNote.textContent = `\u2705 \u043F\u0438\u0448\u0435\u0442\u0441\u044F \u0432 \u043F\u0430\u043F\u043A\u0443, \u043F\u043E\u0441\u043B\u0435\u0434\u043D\u044F\u044F \u0437\u0430\u043F\u0438\u0441\u044C ${new Date(extOk).toLocaleTimeString()}`;
+        this.elements.extLog.textContent = "\u0432\u044B\u0431\u0440\u0430\u0442\u044C \u043F\u0430\u043F\u043A\u0443";
+      } else {
+        this.elements.extLogNote.style.display = extOk > 0 ? "block" : "none";
+        if (extOk > 0) this.elements.extLogNote.textContent = "\u26A0 \u0437\u0430\u043F\u0438\u0441\u044C \u043D\u0435 \u043E\u0431\u043D\u043E\u0432\u043B\u044F\u043B\u0430\u0441\u044C \u2014 \u043D\u0430\u0436\u043C\u0438 \u043A\u043D\u043E\u043F\u043A\u0443 (\u0440\u0430\u0437\u0440\u0435\u0448\u0435\u043D\u0438\u0435 Chrome)";
+      }
       this.elements.peer.textContent = state.currentPeerId !== null ? String(state.currentPeerId) : "\u2014";
       this.elements.messages.textContent = String(state.counts.messages);
       this.elements.decisions.textContent = String(state.counts.decisions);
@@ -8786,7 +8968,7 @@
       }
     };
     try {
-      const version = true ? "0.3.261114.1020" : "?";
+      const version = true ? "0.3.261114.1044" : "?";
       push({ t: Date.now(), k: "init", msg: `recorder ${version} @ ${location.host}` });
       window.addEventListener("error", (event) => {
         recordError("error", `${event.message} @${event.filename}:${event.lineno}`);
@@ -8839,7 +9021,7 @@
     const start = async () => {
       try {
         if (typeof console !== "undefined" && console.info) {
-          console.info(`[Stalker Assistant] v${"0.3.261114.1020"} started`);
+          console.info(`[Stalker Assistant] v${"0.3.261114.1044"} started`);
         }
         runtime.panel = new Panel({
           onToggleRecording: () => {
@@ -8898,6 +9080,9 @@
             void runtime.setAnomalyTypeRule(typeName, action);
           },
           onExport: () => runtime.exportData(),
+          onExtLogPick: () => {
+            void runtime.pickExternalLogDir();
+          },
           onClear: async () => {
             await runtime.clear();
             domCollector?.reset();
