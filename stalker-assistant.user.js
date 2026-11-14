@@ -1,7 +1,7 @@
 /* ==UserScript==
 // @name         Stalker Assistant
 // @namespace    local.stalker-assistant
-// @version      0.3.261114.0110
+// @version      0.3.261114.0826
 // @description  Сбор событий, клавиатур и решений в игре «Сталкер» (VK)
 // @match        https://vk.com/*
 // @match        https://vk.ru/*
@@ -4059,6 +4059,7 @@
   var KEYBOARD_EXPAND_MIN_INTERVAL_MS = 3e4;
   var KEYBOARD_RELOAD_MIN_INTERVAL_MS = 15e3;
   var GARDEN_SELL_RETRY_MS = 6e4;
+  var GARDEN_SELL_MAX_FAILS = 3;
   var FORK_RULE_REFRESH_MS = 3e4;
   var RAW_KEEP_ON_QUOTA = 5e3;
   var LOG_AUTO_DEDUPE_MS = 1500;
@@ -4297,6 +4298,8 @@
     gardenSlotsByPeer = /* @__PURE__ */ new Map();
     /** Когда отправляли «Продать всю рыбу» в последний раз (защита от шторма). */
     gardenSellAt = 0;
+    /** Безответных отправок продажи подряд (сброс по «Садок продан»/новым слотам). */
+    gardenSellFails = 0;
     manualChoice = null;
     lastAutoClickAt = 0;
     /** Окно подавления композер-синка после последнего автоклика (короче после «➕ Действия»). */
@@ -5731,7 +5734,7 @@
       } catch {
         return;
       }
-      const local = "0.3.261114.0110";
+      const local = "0.3.261114.0826";
       if (remote === null || !isNewerVersion(remote, local)) return;
       const firstNotice = this.state.updateAvailable?.remote !== remote;
       this.state.updateAvailable = { remote, local };
@@ -5835,11 +5838,12 @@
         localStorage.setItem(PAGE_RELOAD_LOG_KEY, JSON.stringify(log));
       } catch {
       }
-      this.logAuto({ event: "page-reload", silentMs: this.pageReloadSilentMs });
-      try {
-        await this.flushWrites();
-      } catch {
-      }
+      this.logAuto({ event: "page-reload", silentMs: this.pageReloadSilentMs, reason: this.lastHangReason });
+      await Promise.race([
+        this.flushWrites().catch(() => {
+        }),
+        new Promise((resolve) => window.setTimeout(resolve, 3e3))
+      ]);
       window.location.reload();
     }
     readReloadLog() {
@@ -6100,10 +6104,12 @@
           if (fresh && message.text) {
             const slots = parseGardenSlots(message.text);
             if (slots !== null) {
+              this.gardenSellFails = 0;
               this.gardenSlotsByPeer.set(message.peerId, slots);
             } else if (isGardenSoldText(message.text)) {
               const previous = this.gardenSlotsByPeer.get(message.peerId);
               this.gardenSlotsByPeer.set(message.peerId, { current: 0, limit: previous?.limit ?? 35 });
+              this.gardenSellFails = 0;
             }
           }
           if (fresh && message.text && isFishLostText(message.text)) {
@@ -6561,7 +6567,8 @@
       }
       if (this.state.gardenAutoSell) {
         const slots = this.gardenSlotsByPeer.get(peerId) ?? null;
-        if (isGardenFull(slots) && Date.now() - this.gardenSellAt > GARDEN_SELL_RETRY_MS) {
+        const fishingNow = Date.now() < this.fishingUntil;
+        if (fishingNow && this.gardenSellFails < GARDEN_SELL_MAX_FAILS && isGardenFull(slots) && Date.now() - this.gardenSellAt > GARDEN_SELL_RETRY_MS) {
           const kept2 = keepEarliestPlanAt(
             { timerActive: prevTimerActive, plan: prevPlan },
             { button: GARDEN_SELL_COMMAND, reason: "rule", detached: true },
@@ -6859,6 +6866,7 @@
       this.lastAutoClickSuccessAt = Date.now();
       this.autoClickAtByButton.set(planned.button, Date.now());
       if (planned.sendText === true) this.gardenSellAt = Date.now();
+      if (planned.sendText === true && planned.button === GARDEN_SELL_COMMAND) this.gardenSellFails += 1;
       if (planned.sendText === true && this.invasionPendingCommand === planned.button) {
         this.invasionPendingCommand = null;
         this.logAuto({ event: "invasion-sent", command: planned.button, phase: this.invasionState.phase });
@@ -7635,7 +7643,7 @@
       };
       if (true) {
         const versionEl = shadow.querySelector(".version");
-        if (versionEl) versionEl.textContent = "0.3.261114.0110";
+        if (versionEl) versionEl.textContent = "0.3.261114.0826";
       }
       this.elements.toggle.addEventListener("click", () => actions.onToggleRecording());
       this.elements.updateReload.addEventListener("click", () => {
@@ -8696,7 +8704,7 @@
       }
     };
     try {
-      const version = true ? "0.3.261114.0110" : "?";
+      const version = true ? "0.3.261114.0826" : "?";
       push({ t: Date.now(), k: "init", msg: `recorder ${version} @ ${location.host}` });
       window.addEventListener("error", (event) => {
         recordError("error", `${event.message} @${event.filename}:${event.lineno}`);
@@ -8749,7 +8757,7 @@
     const start = async () => {
       try {
         if (typeof console !== "undefined" && console.info) {
-          console.info(`[Stalker Assistant] v${"0.3.261114.0110"} started`);
+          console.info(`[Stalker Assistant] v${"0.3.261114.0826"} started`);
         }
         runtime.panel = new Panel({
           onToggleRecording: () => {
