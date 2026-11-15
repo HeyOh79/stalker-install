@@ -1,7 +1,7 @@
 /* ==UserScript==
 // @name         Stalker Assistant
 // @namespace    local.stalker-assistant
-// @version      0.3.261114.1115
+// @version      0.3.261115.0310
 // @description  Сбор событий, клавиатур и решений в игре «Сталкер» (VK)
 // @match        https://vk.com/*
 // @match        https://vk.ru/*
@@ -4067,6 +4067,76 @@
     return { state: next, command: null };
   }
 
+  // src/core/bosses.ts
+  var BOSS_STATUS_COMMAND = "\u0414\u043E\u0441\u0442\u0443\u043F\u043D\u043E\u0441\u0442\u044C \u0431\u043E\u0441\u0441\u043E\u0432";
+  var BOSS_STATUS_RE = /Статус боссов/u;
+  function bossTravelCommand(location2) {
+    return `\u041F\u0435\u0440\u0435\u0439\u0442\u0438 \u0432 ${location2}`;
+  }
+  var BOSS_LOCATIONS = {
+    "\u0431\u0430\u0430\u043B": "\u041B\u043E\u0449\u0438\u043D\u0430",
+    "\u0432\u0430\u0441\u0438\u043B\u0438\u0441\u043A": "\u041B\u043E\u0449\u0438\u043D\u0430",
+    "\u0434\u0440\u0435\u0432\u0435\u0441\u043D\u044B\u0435 \u0431\u043B\u0438\u0437\u043D\u0435\u0446\u044B": "\u041B\u043E\u0449\u0438\u043D\u0430",
+    "\u0431\u0430\u0440\u043E\u043D": "\u0421\u0442\u0430\u0440\u0430\u044F \u0446\u0435\u0440\u043A\u043E\u0432\u044C",
+    "\u043F\u043E\u0433\u043B\u043E\u0442\u0438\u0442\u0435\u043B\u044C": "\u0422\u0430\u0439\u043D\u044B\u0439 \u0432\u044B\u0445\u043E\u0434 \u043A \u043F\u043E\u043B\u044E",
+    "\u043F\u043E\u0442\u0440\u043E\u0448\u0438\u0442\u0435\u043B\u044C": "\u0422\u0430\u0439\u043D\u044B\u0439 \u0432\u044B\u0445\u043E\u0434 \u043A \u043F\u043E\u043B\u044E",
+    "\u0430\u043B\u044C\u0444\u0430 \u043F\u043B\u043E\u0442\u044C": "\u0421\u0442\u0430\u0440\u0430\u044F \u0446\u0435\u0440\u043A\u043E\u0432\u044C"
+  };
+  var BOSS_WAIT_THRESHOLD_MS = 15 * 60 * 1e3;
+  var BOSS_RECHECK_MS = 60 * 60 * 1e3;
+  var BOSS_LINE_RE = new RegExp("^\\s*(?:\\p{Extended_Pictographic}|\\p{Emoji_Presentation}|\\s)*([\\p{L}\\p{N}][\\p{L}\\p{N}\\s-]*?)\\s*:\\s*(\u0414\u043E\u0441\u0442\u0443\u043F\u0435\u043D|\u23F3?\\s*\u0427\u0435\u0440\u0435\u0437\\s*(?:(\\d+)\\s*\u0434)?\\s*(?:(\\d+)\\s*\u0447)?\\s*(?:(\\d+)\\s*\u043C\u0438\u043D)?)", "u");
+  function parseBossStatus(text) {
+    if (!BOSS_STATUS_RE.test(text)) return null;
+    const bosses = [];
+    for (const line of text.split("\n")) {
+      const match = BOSS_LINE_RE.exec(line);
+      if (match === null) continue;
+      const name = (match[1] ?? "").trim();
+      if (name.length === 0) continue;
+      if (match[2] === "\u0414\u043E\u0441\u0442\u0443\u043F\u0435\u043D") {
+        bosses.push({ name, available: true, respawnMs: null });
+        continue;
+      }
+      const days = Number(match[3] ?? 0);
+      const hours = Number(match[4] ?? 0);
+      const minutes = Number(match[5] ?? 0);
+      bosses.push({
+        name,
+        available: false,
+        respawnMs: (days * 24 * 60 + hours * 60 + minutes) * 60 * 1e3
+      });
+    }
+    return bosses.length > 0 ? bosses : null;
+  }
+  function bossFarmPlan(statuses, currentLocation, fallbackLocation) {
+    const prioritized = statuses.map((boss, index) => ({ ...boss, priority: statuses.length - index })).filter((boss) => boss.available);
+    if (prioritized.length > 0) {
+      const locBest = /* @__PURE__ */ new Map();
+      for (const boss of prioritized) {
+        const location2 = BOSS_LOCATIONS[boss.name.toLowerCase()];
+        if (location2 === void 0) continue;
+        const prev = locBest.get(location2) ?? Number.MAX_SAFE_INTEGER;
+        locBest.set(location2, Math.min(prev, boss.priority));
+      }
+      const locations = [...locBest.entries()].sort((a, b) => a[1] - b[1]).map(([location2]) => location2);
+      if (locations.length > 0) {
+        if (currentLocation !== null && locations.includes(currentLocation)) {
+          return { action: "farm", location: currentLocation, nextCheckMs: 10 * 60 * 1e3 };
+        }
+        return { action: "travel", location: locations[0] ?? null, nextCheckMs: 5 * 60 * 1e3 };
+      }
+    }
+    const respawns = statuses.filter((boss) => !boss.available && boss.respawnMs !== null).map((boss) => boss.respawnMs);
+    const nearest = respawns.length > 0 ? Math.min(...respawns) : null;
+    if (nearest !== null && nearest <= BOSS_WAIT_THRESHOLD_MS) {
+      return { action: "wait", location: null, nextCheckMs: nearest + 60 * 1e3 };
+    }
+    if (fallbackLocation !== null && fallbackLocation.length > 0 && fallbackLocation !== currentLocation) {
+      return { action: "fallback", location: fallbackLocation, nextCheckMs: BOSS_RECHECK_MS };
+    }
+    return { action: "wait", location: null, nextCheckMs: BOSS_RECHECK_MS };
+  }
+
   // src/core/garden.ts
   var GARDEN_SELL_COMMAND = "\u041F\u0440\u043E\u0434\u0430\u0442\u044C \u0432\u0441\u044E \u0440\u044B\u0431\u0443";
   var GARDEN_RE = /🗑\s*Садок:\s*(\d+)\s*\/\s*(\d+)/u;
@@ -4241,6 +4311,9 @@
   var INIT_DECISIONS_CAP = 8e3;
   var INIT_WINDOW_MIN_MS = 60 * 60 * 1e3;
   var SEND_TEXT_RESEND_COOLDOWN_MS = 30 * 1e3;
+  var BOSS_REPLY_TIMEOUT_MS = 60 * 1e3;
+  var BOSS_TRAVEL_TIMEOUT_MS = 5 * 60 * 1e3;
+  var BOSS_TRAVEL_MAX_RETRIES = 2;
   var EXT_LOG_PUMP_MS = 60 * 1e3;
   var EXT_LOG_HEALTHY_MS = 15 * 60 * 1e3;
   var RAW_RETENTION_EXT_MS = 2 * 24 * 60 * 60 * 1e3;
@@ -4280,6 +4353,9 @@
       anomalyEntryPaused: false,
       anomalyBolts: null,
       invasionEnabled: false,
+      bossFarmEnabled: false,
+      bossFarmPhase: "idle",
+      bossFarmFallback: null,
       extLogLastOkAt: 0,
       invasionPhase: "idle",
       invasionStage: 0,
@@ -4437,6 +4513,16 @@
     invasionPendingCommand = null;
     /** Сколько раз повторяли команду перехода нашествия без подтверждения. */
     invasionTravelRetries = 0;
+    /** ФАРМ БОССОВ: тумблер, локация ожидания и машина состояний. */
+    bossFarmEnabled = false;
+    bossFarmFallback = null;
+    bossFarmPhase = "idle";
+    bossFarmTarget = null;
+    bossFarmPendingCommand = null;
+    bossFarmSentAt = null;
+    bossFarmNextCheckAt = 0;
+    bossFarmTravelRetries = 0;
+    bossFarmLastStatusAt = null;
     /**
      * Из аномалии пора выходить (страж HP): флаг по чатам, живёт до «Вы вышли
      * из аномалии» / входа в новое поле. После подбора артефакта флаг больше
@@ -4632,6 +4718,16 @@
       this.anomalyEntryLocked = sanitizeBoolean(await getMeta("anomalyEntryLocked", false), false);
       this.state.anomalyEntryPaused = this.anomalyEntryLocked;
       this.invasionEnabled = sanitizeBoolean(await getMeta("invasionEnabled", false), false);
+      this.bossFarmEnabled = sanitizeBoolean(await getMeta("bossFarmEnabled", false), false);
+      this.state.bossFarmEnabled = this.bossFarmEnabled;
+      if (this.bossFarmEnabled) {
+        this.bossFarmPhase = "check";
+        this.state.bossFarmPhase = "check";
+        this.bossFarmPendingCommand = BOSS_STATUS_COMMAND;
+      }
+      const fallback = await getMeta("bossFarmFallback", null);
+      this.bossFarmFallback = typeof fallback === "string" && fallback.trim().length > 0 ? fallback.trim() : null;
+      this.state.bossFarmFallback = this.bossFarmFallback;
       this.state.invasionEnabled = this.invasionEnabled;
       this.state.forkRules = sanitizeForkRules(await getMeta("forkRules", []));
       this.state.eventRules = sanitizeEventRules(await getMeta("eventRules", DEFAULT_EVENT_RULES));
@@ -4999,6 +5095,119 @@
       this.panel?.update(this.state);
     }
     /** Тумблер «Страж HP (аномалия)»: здоровье ≤ 25% в поле — советуем выход. */
+    /** Тумблер «Боссы»: включение сразу проверяет статус, выключение сбрасывает. */
+    async setBossFarmEnabled(value) {
+      this.bossFarmEnabled = value;
+      this.state.bossFarmEnabled = value;
+      if (value) {
+        this.bossFarmPhase = "check";
+        this.state.bossFarmPhase = "check";
+        this.bossFarmPendingCommand = BOSS_STATUS_COMMAND;
+        this.bossFarmSentAt = null;
+        this.logAuto({ event: "boss-farm-start" });
+      } else {
+        this.bossFarmPhase = "idle";
+        this.bossFarmTarget = null;
+        this.bossFarmPendingCommand = null;
+        this.state.bossFarmPhase = "idle";
+      }
+      await setMeta("bossFarmEnabled", value);
+      this.evaluateAdvice();
+      if (this.state.mode === "auto") this.scheduleAuto();
+      this.panel?.update(this.state);
+    }
+    /** Локация ожидания (все боссы мертвы надолго). */
+    async setBossFarmFallback(location2) {
+      this.bossFarmFallback = location2 !== null && location2.trim().length > 0 ? location2.trim() : null;
+      this.state.bossFarmFallback = this.bossFarmFallback;
+      await setMeta("bossFarmFallback", this.bossFarmFallback);
+      this.panel?.update(this.state);
+    }
+    /** Тумблер включён — команда ожидает отправки (план с sendText). */
+    bossFarmCommand(command) {
+      this.bossFarmPendingCommand = command;
+      this.bossFarmSentAt = Date.now();
+    }
+    /** Тик фарм-машины (в проверке живости): таймауты проверки и перехода. */
+    tickBossFarm() {
+      if (!this.bossFarmEnabled || this.bossFarmPendingCommand !== null) return;
+      const now = Date.now();
+      if (this.bossFarmPhase === "check") {
+        const sentAt = this.bossFarmSentAt ?? 0;
+        if (now - sentAt < BOSS_REPLY_TIMEOUT_MS) return;
+        if (this.bossFarmTravelRetries >= 2) {
+          this.bossFarmTravelRetries = 0;
+          this.bossFarmPhase = "wait";
+          this.state.bossFarmPhase = "wait";
+          this.bossFarmNextCheckAt = now + BOSS_RECHECK_MS;
+          this.logAuto({ event: "boss-farm-silent", phase: "check" });
+          return;
+        }
+        this.bossFarmTravelRetries += 1;
+        this.bossFarmCommand(BOSS_STATUS_COMMAND);
+        this.logAuto({ event: "boss-farm-retry", retry: this.bossFarmTravelRetries, phase: "check" });
+        return;
+      }
+      if (this.bossFarmPhase === "travel") {
+        const sentAt = this.bossFarmSentAt ?? 0;
+        if (now - sentAt < BOSS_TRAVEL_TIMEOUT_MS) return;
+        if (this.bossFarmTravelRetries >= BOSS_TRAVEL_MAX_RETRIES) {
+          this.bossFarmTravelRetries = 0;
+          this.bossFarmPhase = "check";
+          this.state.bossFarmPhase = "check";
+          this.bossFarmCommand(BOSS_STATUS_COMMAND);
+          this.logAuto({ event: "boss-farm-timeout", target: this.bossFarmTarget });
+          return;
+        }
+        this.bossFarmTravelRetries += 1;
+        const target = this.bossFarmTarget;
+        if (target !== null) {
+          this.bossFarmCommand(bossTravelCommand(target));
+          this.logAuto({ event: "boss-farm-retry", retry: this.bossFarmTravelRetries, phase: "travel", target });
+        }
+        return;
+      }
+      if (now >= this.bossFarmNextCheckAt) {
+        this.bossFarmPhase = "check";
+        this.state.bossFarmPhase = "check";
+        this.bossFarmTravelRetries = 0;
+        this.bossFarmCommand(BOSS_STATUS_COMMAND);
+        this.logAuto({ event: "boss-farm-check", sinceLastStatusMs: this.bossFarmLastStatusAt !== null ? now - this.bossFarmLastStatusAt : null });
+      }
+    }
+    /** Ответ игры «📊 Статус боссов»: план охоты и его исполнение. */
+    handleBossStatus(text, peerId) {
+      if (!this.bossFarmEnabled) return;
+      const statuses = parseBossStatus(text);
+      if (statuses === null) return;
+      this.bossFarmLastStatusAt = Date.now();
+      const current = this.currentLocationByPeer.get(peerId) ?? null;
+      const plan = bossFarmPlan(statuses, current, this.bossFarmFallback);
+      this.bossFarmNextCheckAt = Date.now() + plan.nextCheckMs;
+      this.bossFarmTravelRetries = 0;
+      this.logAuto({ event: "boss-farm-plan", action: plan.action, location: plan.location, available: statuses.filter((b) => b.available).map((b) => b.name).join(",") });
+      if (plan.action === "farm") {
+        this.bossFarmPhase = "farm";
+        this.bossFarmTarget = plan.location;
+        this.state.bossFarmPhase = "farm";
+      } else if (plan.action === "travel" || plan.action === "fallback") {
+        if (plan.location !== null) {
+          this.bossFarmPhase = "travel";
+          this.bossFarmTarget = plan.location;
+          this.state.bossFarmPhase = "travel";
+          this.bossFarmCommand(bossTravelCommand(plan.location));
+        } else {
+          this.bossFarmPhase = "wait";
+          this.state.bossFarmPhase = "wait";
+        }
+      } else {
+        this.bossFarmPhase = "wait";
+        this.state.bossFarmPhase = "wait";
+      }
+      this.evaluateAdvice();
+      if (this.state.mode === "auto") this.scheduleAuto();
+      this.panel?.update(this.state);
+    }
     /** Зеркалит фазу нашествия в состояние панели. */
     syncInvasionState() {
       this.state.invasionPhase = this.invasionState.phase;
@@ -5081,6 +5290,10 @@
      * «Перейти к N» (шаг подтверждается fresh «Локация: X»).
      */
     startMapTravel(target) {
+      if (this.bossFarmEnabled) {
+        this.reportError(new Error("\u041A\u0430\u0440\u0442\u0430: \u0444\u0430\u0440\u043C \u0431\u043E\u0441\u0441\u043E\u0432 \u0430\u043A\u0442\u0438\u0432\u0435\u043D \u2014 \u043C\u0430\u0440\u0448\u0440\u0443\u0442 \u043D\u0435 \u0437\u0430\u043F\u0443\u0449\u0435\u043D"), "\u043A\u0430\u0440\u0442\u0430");
+        return;
+      }
       if (this.invasionEnabled && this.invasionState.phase !== "idle" && this.invasionState.phase !== "done") {
         this.reportError(new Error("\u041A\u0430\u0440\u0442\u0430: \u043D\u0430\u0448\u0435\u0441\u0442\u0432\u0438\u0435 \u0430\u043A\u0442\u0438\u0432\u043D\u043E \u2014 \u043C\u0430\u0440\u0448\u0440\u0443\u0442 \u043D\u0435 \u0437\u0430\u043F\u0443\u0449\u0435\u043D"), "\u043A\u0430\u0440\u0442\u0430");
         return;
@@ -5750,6 +5963,7 @@
     checkKeyboardLiveness() {
       this.tickMapTravel();
       this.tickInvasionTravel();
+      this.tickBossFarm();
       this.maybePageReload();
       if (this.state.mode === "observe") return;
       if (this.captchaActive()) return;
@@ -5980,7 +6194,7 @@
       } catch {
         return;
       }
-      const local = "0.3.261114.1115";
+      const local = "0.3.261115.0310";
       if (remote === null || !isNewerVersion(remote, local)) return;
       const firstNotice = this.state.updateAvailable?.remote !== remote;
       this.state.updateAvailable = { remote, local };
@@ -6328,6 +6542,18 @@
               }
               this.panel?.update(this.state);
             }
+            if (!message.out && message.text && BOSS_STATUS_RE.test(message.text)) {
+              this.handleBossStatus(message.text, message.peerId);
+            }
+            if (locationName !== null && this.bossFarmPhase === "travel" && locationName === this.bossFarmTarget && message.peerId === this.state.currentPeerId) {
+              this.bossFarmPhase = "farm";
+              this.state.bossFarmPhase = "farm";
+              this.bossFarmSentAt = null;
+              this.bossFarmTravelRetries = 0;
+              this.bossFarmNextCheckAt = Date.now() + 10 * 60 * 1e3;
+              this.logAuto({ event: "boss-farm-arrived", location: locationName });
+              this.panel?.update(this.state);
+            }
             if (locationName !== null && (this.invasionState.phase === "travel" || this.invasionState.phase === "fight")) {
               const before = this.invasionState;
               const step = invasionOnLocationHeader(this.invasionState, message.text, message.ts, Date.now());
@@ -6469,6 +6695,11 @@
             }
             if (inlineBattle || composerBattle) {
               this.logAuto({ event: "battle-over", scene: trimLoadingPrefix(message.text).slice(0, 60) });
+              if (this.bossFarmEnabled && this.bossFarmPhase === "farm") {
+                const last = this.bossFarmLastStatusAt ?? 0;
+                const due = Math.max(Date.now() + 2e4, last + 6e4);
+                if (due < this.bossFarmNextCheckAt) this.bossFarmNextCheckAt = due;
+              }
             }
           }
           this.lastBotMessageTs.set(message.peerId, Math.max(this.lastBotMessageTs.get(message.peerId) ?? 0, message.ts));
@@ -6819,6 +7050,26 @@
         this.logAuto({ event: "plan", button: command, reason: "rule", delayMs: Math.max(0, kept2.at - Date.now()), map: true });
         return;
       }
+      if (this.bossFarmPendingCommand !== null && this.isChatReady()) {
+        const command = this.bossFarmPendingCommand;
+        const sentAgo = Date.now() - (this.autoClickAtByButton.get(command) ?? 0);
+        if (sentAgo >= 3e4) {
+          const kept2 = keepEarliestPlanAt(
+            { timerActive: prevTimerActive, plan: prevPlan },
+            { button: command, reason: "rule", detached: true },
+            this.state.autoDelays.other,
+            Date.now()
+          );
+          if (!kept2.reused) this.retryCount = 0;
+          this.plannedAction = { button: command, reason: "rule", detached: true, at: kept2.at, sendText: true };
+          this.state.autoPlan = { button: command, reason: "rule", at: kept2.at };
+          this.autoTimer = window.setTimeout(() => {
+            void this.runAutoClick();
+          }, Math.max(0, kept2.at - Date.now()));
+          this.logAuto({ event: "plan", button: command, reason: "rule", delayMs: Math.max(0, kept2.at - Date.now()), sendText: true, bossFarm: true });
+          return;
+        }
+      }
       if (this.state.gardenAutoSell) {
         const slots = this.gardenSlotsByPeer.get(peerId) ?? null;
         const fishingNow = Date.now() < this.fishingUntil;
@@ -7121,6 +7372,11 @@
       this.autoClickAtByButton.set(planned.button, Date.now());
       if (planned.sendText === true) this.gardenSellAt = Date.now();
       if (planned.sendText === true && planned.button === GARDEN_SELL_COMMAND) this.gardenSellFails += 1;
+      if (planned.sendText === true && this.bossFarmPendingCommand === planned.button) {
+        this.bossFarmPendingCommand = null;
+        this.bossFarmSentAt = Date.now();
+        this.logAuto({ event: "boss-farm-sent", command: planned.button, phase: this.bossFarmPhase });
+      }
       if (planned.sendText === true && this.invasionPendingCommand === planned.button) {
         this.invasionPendingCommand = null;
         this.logAuto({ event: "invasion-sent", command: planned.button, phase: this.invasionState.phase });
@@ -7707,6 +7963,8 @@
         <div class="row"><span>\u0410\u0432\u0442\u043E\u0441\u0431\u0440\u043E\u0441 \u043F\u0440\u0438 \u043F\u0440\u043E\u0441\u0442\u043E\u0435</span><button class="auto-reset toggle" type="button" title="\u041C\u044F\u0433\u043A\u0438\u0439 \u0441\u0431\u0440\u043E\u0441 \u0441\u043E\u0441\u0442\u043E\u044F\u043D\u0438\u044F \u0431\u043E\u0442\u0430, \u0435\u0441\u043B\u0438 \u0430\u0432\u0442\u043E-\u0440\u0435\u0436\u0438\u043C \u0434\u043E\u043B\u0433\u043E \u0431\u0435\u0437 \u043F\u0440\u043E\u0433\u0440\u0435\u0441\u0441\u0430 (3 \u043C\u0438\u043D). \u041B\u043E\u0433\u0438 \u043D\u0435 \u0443\u0434\u0430\u043B\u044F\u044E\u0442\u0441\u044F.">\u0432\u043A\u043B</button></div>
         <div class="row"><span>\u041F\u0430\u0443\u0437\u0430 \u043F\u0440\u0438 \u0440\u0443\u0447\u043D\u044B\u0445 \u043D\u0430\u0436\u0430\u0442\u0438\u044F\u0445</span><button class="manual-toggle toggle" type="button" title="\u0420\u0443\u0447\u043D\u043E\u0435 \u0434\u0435\u0439\u0441\u0442\u0432\u0438\u0435 (\u043D\u0430\u0436\u0430\u0442\u0438\u0435 \u0441 \u0442\u0435\u043B\u0435\u0444\u043E\u043D\u0430 \u0438\u043B\u0438 \u043D\u0430\u0431\u043E\u0440 \u0442\u0435\u043A\u0441\u0442\u0430) \u043E\u0441\u0442\u0430\u043D\u0430\u0432\u043B\u0438\u0432\u0430\u0435\u0442 \u0430\u0432\u0442\u043E\u043D\u0430\u0436\u0430\u0442\u0438\u044F \u043D\u0430 30 \u0441 \u2014 \u0431\u043E\u0442 \u043D\u0435 \u043C\u0435\u0448\u0430\u0435\u0442 \u0438\u0433\u0440\u0430\u0442\u044C \u0440\u0443\u043A\u0430\u043C\u0438.">\u0432\u043A\u043B</button></div>
         <div class="row"><span>\u041F\u0440\u043E\u0434\u0430\u0432\u0430\u0442\u044C \u0441\u0430\u0434\u043E\u043A \u043F\u0440\u0438 \u043F\u043E\u043B\u043D\u043E\u043C</span><button class="garden-sell toggle" type="button" title="\u041A\u043E\u0433\u0434\u0430 \u0441\u0430\u0434\u043E\u043A \u043F\u043E\u043B\u043E\u043D (35/35 \u2014 \u0440\u044B\u0431\u0430 \u043E\u0442\u043F\u0443\u0441\u043A\u0430\u0435\u0442\u0441\u044F), \u0430\u0432\u0442\u043E-\u0440\u0435\u0436\u0438\u043C \u043E\u0442\u043F\u0440\u0430\u0432\u043B\u044F\u0435\u0442 \u0432 \u0447\u0430\u0442 \u043A\u043E\u043C\u0430\u043D\u0434\u044B \xAB\u041F\u0440\u043E\u0434\u0430\u0442\u044C \u0432\u0441\u044E \u0440\u044B\u0431\u0443\xBB.">\u0432\u044B\u043A\u043B</button></div>
+        <div class="row"><span>\u0411\u043E\u0441\u0441\u044B</span><button class="bossfarm toggle" type="button" title="\u0424\u0430\u0440\u043C \u0431\u043E\u0441\u0441\u043E\u0432: \u0431\u043E\u0442 \u043E\u0442\u043F\u0440\u0430\u0432\u043B\u044F\u0435\u0442 \xAB\u0414\u043E\u0441\u0442\u0443\u043F\u043D\u043E\u0441\u0442\u044C \u0431\u043E\u0441\u0441\u043E\u0432\xBB, \u0438\u0434\u0451\u0442 \u043F\u043E \u0441\u043F\u0438\u0441\u043A\u0443 \u0441\u043D\u0438\u0437\u0443 \u0432\u0432\u0435\u0440\u0445 \u2014 \u0410\u043B\u044C\u0444\u0430 \u043F\u043B\u043E\u0442\u044C (\u0421\u0442\u0430\u0440\u0430\u044F \u0446\u0435\u0440\u043A\u043E\u0432\u044C) \u2192 \u041F\u043E\u0442\u0440\u043E\u0448\u0438\u0442\u0435\u043B\u044C/\u041F\u043E\u0433\u043B\u043E\u0442\u0438\u0442\u0435\u043B\u044C (\u0422\u0430\u0439\u043D\u044B\u0439 \u0432\u044B\u0445\u043E\u0434 \u043A \u043F\u043E\u043B\u044E) \u2192 \u0411\u0430\u0440\u043E\u043D (\u0421\u0442\u0430\u0440\u0430\u044F \u0446\u0435\u0440\u043A\u043E\u0432\u044C) \u2192 \u0411\u043B\u0438\u0437\u043D\u0435\u0446\u044B/\u0412\u0430\u0441\u0438\u043B\u0438\u0441\u043A/\u0411\u0430\u0430\u043B (\u041B\u043E\u0449\u0438\u043D\u0430). \u0423\u0431\u0438\u0432\u0430\u0435\u0442 \u0434\u043E\u0441\u0442\u0443\u043F\u043D\u044B\u0445 \u043D\u0430 \u043B\u043E\u043A\u0430\u0446\u0438\u0438, \u043F\u0435\u0440\u0435\u0445\u043E\u0434\u0438\u0442 \u043A \u0441\u043B\u0435\u0434\u0443\u044E\u0449\u0435\u0439, \u0441\u0442\u0430\u0442\u0443\u0441 \u043F\u0435\u0440\u0435\u043F\u0440\u043E\u0432\u0435\u0440\u044F\u0435\u0442\u0441\u044F \u0440\u0430\u0437 \u0432 \u0447\u0430\u0441 \u0438 \u043F\u043E\u0441\u043B\u0435 \u043A\u0430\u0436\u0434\u043E\u0433\u043E \u0431\u043E\u044F. \u0412\u0441\u0435 \u043C\u0435\u0440\u0442\u0432\u044B \u043D\u0430\u0434\u043E\u043B\u0433\u043E \u2014 \u0443\u0445\u043E\u0434\u0438\u0442 \u0432 \u043B\u043E\u043A\u0430\u0446\u0438\u044E \u043E\u0436\u0438\u0434\u0430\u043D\u0438\u044F.">\u0432\u044B\u043A\u043B</button></div>
+        <div class="row bossfarm-fb"><span>\u041B\u043E\u043A\u0430\u0446\u0438\u044F \u043E\u0436\u0438\u0434\u0430\u043D\u0438\u044F</span><input class="bossfarm-loc" type="text" placeholder="\u0435\u0441\u043B\u0438 \u0432\u0441\u0435 \u043C\u0435\u0440\u0442\u0432\u044B &gt;15 \u043C\u0438\u043D" style="flex:1;min-width:0;padding:3px 6px;border:1px solid #3a4a5a;border-radius:6px;background:#10161d;color:#d8e4ee;font-size:11px"><button class="bossfarm-ok" type="button">\u041E\u041A</button></div>
         <div class="row"><span>\u041D\u0430\u0448\u0435\u0441\u0442\u0432\u0438\u0435</span><button class="invasion toggle" type="button" title="\u0412\u043A\u043B\u044E\u0447\u0438 \u2014 \u0431\u043E\u0442 \u0441\u0440\u0430\u0437\u0443 \u0432\u0435\u0434\u0451\u0442 \u043D\u0430\u0448\u0435\u0441\u0442\u0432\u0438\u0435 \u043F\u043E \u0442\u0440\u0451\u043C \u043B\u043E\u043A\u0430\u0446\u0438\u044F\u043C (\u0421\u043C\u043E\u0442\u0440\u043E\u0432\u0430\u044F \u0432\u044B\u0448\u043A\u0430 \u2192 \u041D\u0430\u0441\u043E\u0441\u043D\u0430\u044F \u0441\u0442\u0430\u043D\u0446\u0438\u044F \u2192 \u0421\u0442\u0430\u0440\u0430\u044F \u0446\u0435\u0440\u043A\u043E\u0432\u044C): \u0432\u0441\u0442\u0443\u043F\u0430\u0435\u0442, \u0431\u044C\u0451\u0442 \u0437\u043E\u043C\u0431\u0438 \u0440\u043E\u0442\u0430\u0446\u0438\u0435\u0439 \u0438 \u043F\u0435\u0440\u0435\u0445\u043E\u0434\u0438\u0442 \u0434\u0430\u043B\u044C\u0448\u0435. \u0412\u044B\u043A\u043B\u044E\u0447\u0438 \u2014 \u0441\u0431\u0440\u043E\u0441.">\u0432\u044B\u043A\u043B</button></div>
         <div class="row"><span>\u0421\u0442\u0440\u0430\u0436 HP (\u0430\u043D\u043E\u043C\u0430\u043B\u0438\u044F)</span><button class="hp-guard toggle" type="button" title="\u0415\u0441\u043B\u0438 \u0432 \u043F\u043E\u043B\u0435 \u0430\u043D\u043E\u043C\u0430\u043B\u0438\u0438 \u0437\u0434\u043E\u0440\u043E\u0432\u044C\u0435 \u043F\u0430\u0434\u0430\u0435\u0442 \u0434\u043E 25% \u0438 \u043D\u0438\u0436\u0435, \u0430\u0432\u0442\u043E \u043F\u0435\u0440\u0435\u0441\u0442\u0430\u0451\u0442 \u0443\u0433\u043B\u0443\u0431\u043B\u044F\u0442\u044C\u0441\u044F \u0438 \u0432\u044B\u0445\u043E\u0434\u0438\u0442 \u0438\u0437 \u0430\u043D\u043E\u043C\u0430\u043B\u0438\u0438 \u2014 \u0434\u043E\u0431\u0438\u0440\u0430\u0442\u044C \u0430\u0440\u0442\u0435\u0444\u0430\u043A\u0442 \u043F\u0440\u0438 \u0442\u0430\u043A\u043E\u043C HP \u0440\u0438\u0441\u043A\u043E\u0432\u0430\u043D\u043D\u043E.">\u0432\u044B\u043A\u043B</button></div>
         <div class="row"><span>\u0427\u0430\u0442</span><b class="peer">\u2014</b></div>
@@ -7852,6 +8110,9 @@
         autoReset: get(".auto-reset"),
         manualTakeover: get(".manual-toggle"),
         gardenSell: get(".garden-sell"),
+        bossFarm: get(".bossfarm"),
+        bossFarmLoc: get(".bossfarm-loc"),
+        bossFarmOk: get(".bossfarm-ok"),
         invasion: get(".invasion"),
         hpGuard: get(".hp-guard"),
         peer: get(".peer"),
@@ -7901,7 +8162,7 @@
       };
       if (true) {
         const versionEl = shadow.querySelector(".version");
-        if (versionEl) versionEl.textContent = "0.3.261114.1115";
+        if (versionEl) versionEl.textContent = "0.3.261115.0310";
       }
       this.elements.toggle.addEventListener("click", () => actions.onToggleRecording());
       this.elements.updateReload.addEventListener("click", () => {
@@ -7931,6 +8192,12 @@
       });
       this.elements.gardenSell.addEventListener("click", () => {
         this.actions.onToggleGardenAutoSell(this.elements.gardenSell.textContent !== "\u0432\u043A\u043B");
+      });
+      this.elements.bossFarm.addEventListener("click", () => {
+        actions.onBossFarmToggle(this.elements.bossFarm.textContent !== "\u0432\u043A\u043B");
+      });
+      this.elements.bossFarmOk.addEventListener("click", () => {
+        actions.onBossFarmFallback(this.elements.bossFarmLoc.value.trim() || null);
       });
       this.elements.invasion.addEventListener("click", () => {
         actions.onInvasionToggle(this.elements.invasion.textContent !== "\u0432\u043A\u043B");
@@ -8050,6 +8317,14 @@
       this.elements.manualTakeover.classList.toggle("off", !state.manualTakeover);
       this.elements.gardenSell.textContent = state.gardenAutoSell ? "\u0432\u043A\u043B" : "\u0432\u044B\u043A\u043B";
       this.elements.gardenSell.classList.toggle("off", !state.gardenAutoSell);
+      this.elements.bossFarm.textContent = state.bossFarmEnabled ? "\u0432\u043A\u043B" : "\u0432\u044B\u043A\u043B";
+      this.elements.bossFarm.classList.toggle("off", !state.bossFarmEnabled);
+      const phases = { idle: "", check: "\u043F\u0440\u043E\u0432\u0435\u0440\u043A\u0430", travel: "\u043F\u0435\u0440\u0435\u0445\u043E\u0434", farm: "\u043E\u0445\u043E\u0442\u0430", wait: "\u043E\u0436\u0438\u0434\u0430\u043D\u0438\u0435" };
+      const bfPhase = state.bossFarmEnabled ? phases[state.bossFarmPhase] ?? "" : "";
+      this.elements.bossFarm.title = bfPhase === "" ? "\u0424\u0430\u0440\u043C \u0431\u043E\u0441\u0441\u043E\u0432: \u043F\u0440\u043E\u0432\u0435\u0440\u044F\u0435\u0442 \xAB\u0414\u043E\u0441\u0442\u0443\u043F\u043D\u043E\u0441\u0442\u044C \u0431\u043E\u0441\u0441\u043E\u0432\xBB \u0438 \u0432\u0435\u0434\u0451\u0442 \u043E\u0445\u043E\u0442\u0443 \u043F\u043E \u043B\u043E\u043A\u0430\u0446\u0438\u044F\u043C." : "\u0411\u043E\u0441\u0441\u044B: " + bfPhase + ".";
+      if (document.activeElement !== this.elements.bossFarmLoc && (state.bossFarmFallback ?? "") !== this.elements.bossFarmLoc.value) {
+        this.elements.bossFarmLoc.value = state.bossFarmFallback ?? "";
+      }
       this.elements.invasion.textContent = state.invasionEnabled ? "\u0432\u043A\u043B" : "\u0432\u044B\u043A\u043B";
       this.elements.invasion.classList.toggle("off", !state.invasionEnabled);
       const invasionPhaseText = { idle: "", travel: "\u043F\u0435\u0440\u0435\u0445\u043E\u0434", fight: "\u0431\u043E\u0438", done: "\u0437\u0430\u0432\u0435\u0440\u0448\u0435\u043D\u043E" };
@@ -8974,7 +9249,7 @@
       }
     };
     try {
-      const version = true ? "0.3.261114.1115" : "?";
+      const version = true ? "0.3.261115.0310" : "?";
       push({ t: Date.now(), k: "init", msg: `recorder ${version} @ ${location.host}` });
       window.addEventListener("error", (event) => {
         recordError("error", `${event.message} @${event.filename}:${event.lineno}`);
@@ -9027,7 +9302,7 @@
     const start = async () => {
       try {
         if (typeof console !== "undefined" && console.info) {
-          console.info(`[Stalker Assistant] v${"0.3.261114.1115"} started`);
+          console.info(`[Stalker Assistant] v${"0.3.261115.0310"} started`);
         }
         runtime.panel = new Panel({
           onToggleRecording: () => {
@@ -9047,6 +9322,12 @@
           },
           onToggleGardenAutoSell: (enabled) => {
             void runtime.setGardenAutoSell(enabled);
+          },
+          onBossFarmToggle: (enabled) => {
+            void runtime.setBossFarmEnabled(enabled);
+          },
+          onBossFarmFallback: (location2) => {
+            void runtime.setBossFarmFallback(location2);
           },
           onInvasionToggle: (enabled) => {
             void runtime.setInvasionEnabled(enabled);
