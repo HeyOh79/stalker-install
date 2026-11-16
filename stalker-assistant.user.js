@@ -1,7 +1,7 @@
 /* ==UserScript==
 // @name         Stalker Assistant
 // @namespace    local.stalker-assistant
-// @version      0.3.261116.1025
+// @version      0.3.261116.1053
 // @description  Сбор событий, клавиатур и решений в игре «Сталкер» (VK)
 // @match        https://vk.com/*
 // @match        https://vk.ru/*
@@ -4151,7 +4151,9 @@
     breakMin: 8,
     nightFrom: "01:00",
     nightTo: "08:00",
-    sameCommandMs: 8e3
+    sameCommandMs: 8e3,
+    silenceStopMin: 5,
+    panicPerMin: 10
   };
   var asBool = (value, fallback) => typeof value === "boolean" ? value : fallback;
   var asNum = (value, min, max, fallback) => {
@@ -4180,7 +4182,9 @@
       breakMin: asNum(source.breakMin, 2, 60, d.breakMin),
       nightFrom: asClock(source.nightFrom) || (source.nightFrom === "" ? "" : d.nightFrom),
       nightTo: asClock(source.nightTo) || (source.nightTo === "" ? "" : d.nightTo),
-      sameCommandMs: asNum(source.sameCommandMs, 4e3, 6e4, d.sameCommandMs)
+      sameCommandMs: asNum(source.sameCommandMs, 4e3, 6e4, d.sameCommandMs),
+      silenceStopMin: asNum(source.silenceStopMin, 2, 60, d.silenceStopMin),
+      panicPerMin: asNum(source.panicPerMin, 5, 100, d.panicPerMin)
     };
   }
   function clockMinutes(value) {
@@ -4222,6 +4226,27 @@
     const oldest = recent.slice().sort((a, b) => a - b).slice(recent.length - settings.budgetPerHour)[0] ?? 0;
     const waitMs = oldest + 60 * 60 * 1e3 - now;
     return { allowed: false, waitMs: Math.max(0, waitMs) };
+  }
+  function quarantineVerdict(input) {
+    const { now, lastIncomingAt, lastComposerChangeAt, sentAt, settings } = input;
+    if (!settings.enabled) return { stop: false, reason: "", detailMs: 0 };
+    const silenceMs = settings.silenceStopMin * 60 * 1e3;
+    const silentFor = now - lastIncomingAt;
+    if (silentFor < silenceMs) return { stop: false, reason: "", detailMs: 0 };
+    const sentDuringSilence = sentAt.filter((ts) => ts > lastIncomingAt).length;
+    if (sentDuringSilence < 3) return { stop: false, reason: "", detailMs: 0 };
+    const composerAlive = now - lastComposerChangeAt < 10 * 60 * 1e3;
+    return {
+      stop: true,
+      reason: composerAlive ? "feed-cut" : "total-silence",
+      detailMs: silentFor
+    };
+  }
+  function panicRateVerdict(now, sentAt, settings) {
+    if (!settings.enabled) return { stop: false, count: 0 };
+    const minuteAgo = now - 60 * 1e3;
+    const count = sentAt.filter((ts) => ts > minuteAgo).length;
+    return { stop: count > settings.panicPerMin, count };
   }
 
   // src/core/garden.ts
@@ -4445,6 +4470,7 @@
       bossFarmFallback: null,
       humanize: sanitizeHumanizeSettings(null),
       humanizePauseNote: "",
+      humanizeEmergency: "",
       extLogLastOkAt: 0,
       invasionPhase: "idle",
       invasionStage: 0,
@@ -4617,6 +4643,9 @@
     humanizeSentAt = [];
     humanizeActiveSince = 0;
     autoLockTabId = null;
+    /** Аварийные стопы: последний входящий item, последняя смена композера. */
+    lastIncomingItemAt = Date.now();
+    lastComposerChangeAt = Date.now();
     /**
      * Из аномалии пора выходить (страж HP): флаг по чатам, живёт до «Вы вышли
      * из аномалии» / входа в новое поле. После подбора артефакта флаг больше
@@ -5160,6 +5189,12 @@
           return;
         }
         this.lastGameActivityAt = Date.now();
+        if (this.state.humanizeEmergency !== "") {
+          this.state.humanizeEmergency = "";
+          this.lastIncomingItemAt = Date.now();
+          this.humanizeSentAt = [];
+          this.logAuto({ event: "emergency-clear" });
+        }
         this.evaluateAdvice();
         this.scheduleAuto();
       }
@@ -5197,6 +5232,44 @@
       this.panel?.update(this.state);
     }
     /** Тумблер «Страж HP (аномалия)»: здоровье ≤ 25% в поле — советуем выход. */
+    /**
+     * Аварийный останов авто (карантин/паника): режим → «Подсказка», план
+     * снят, в панели КРИЧАЩАЯ причина. Возобновление — только вручную
+     * (повторное включение «Авто» сбрасывает счётчики тишины).
+     */
+    emergencyStopAuto(reason, detail) {
+      if (this.state.humanizeEmergency !== "") return;
+      this.state.humanizeEmergency = reason;
+      this.logAuto({ event: "emergency-stop", reason, detail });
+      this.cancelAutoPlan();
+      this.reportError(new Error("\u0410\u0412\u0410\u0420\u0418\u0419\u041D\u042B\u0419 \u0421\u0422\u041E\u041F: " + detail + " \u2014 \u0430\u0432\u0442\u043E \u043E\u0441\u0442\u0430\u043D\u043E\u0432\u043B\u0435\u043D\u043E. \u041F\u0440\u043E\u0432\u0435\u0440\u044C \u0438\u0433\u0440\u0443 \u0432\u0440\u0443\u0447\u043D\u0443\u044E; \u0432\u043A\u043B\u044E\u0447\u0438\u0442\u044C \xAB\u0410\u0432\u0442\u043E\xBB \u0441\u043D\u043E\u0432\u0430 \u043C\u043E\u0436\u043D\u043E \u043F\u043E\u0441\u043B\u0435 \u0440\u0430\u0437\u0431\u043E\u0440\u0430."), "\u0431\u0435\u0437\u043E\u043F\u0430\u0441\u043D\u043E\u0441\u0442\u044C");
+      void this.setMode("advice");
+      this.panel?.update(this.state);
+    }
+    /** Тик защиты (в проверке живости): карантин канала и паника по темпу. */
+    tickEmergency() {
+      if (this.state.mode !== "auto" || !this.humanize.enabled) return;
+      if (this.state.humanizeEmergency !== "") return;
+      const now = Date.now();
+      const verdict = quarantineVerdict({
+        now,
+        lastIncomingAt: this.lastIncomingItemAt,
+        lastComposerChangeAt: this.lastComposerChangeAt,
+        sentAt: this.humanizeSentAt,
+        settings: this.humanize
+      });
+      if (verdict.stop) {
+        this.emergencyStopAuto(
+          verdict.reason,
+          verdict.reason === "feed-cut" ? "\u043A\u043E\u043C\u0430\u043D\u0434\u044B \u0443\u0445\u043E\u0434\u044F\u0442, \u043D\u043E \u044D\u043A\u0440\u0430\u043D\u044B \u0438\u0433\u0440\u044B \u043D\u0435 \u043F\u0440\u0438\u0445\u043E\u0434\u044F\u0442 \u0443\u0436\u0435 " + Math.round(verdict.detailMs / 6e4) + " \u043C\u0438\u043D (\u043A\u0430\u043D\u0430\u043B \u043E\u0442\u0440\u0435\u0437\u0430\u043D \u2014 \u043F\u043E\u0445\u043E\u0436\u0435 \u043D\u0430 \u043A\u0430\u0440\u0430\u043D\u0442\u0438\u043D \u0438\u0433\u0440\u044B)" : "\u043F\u043E\u043B\u043D\u0430\u044F \u0442\u0438\u0448\u0438\u043D\u0430 \u0438\u0433\u0440\u044B \u043F\u0440\u0438 \u0443\u0445\u043E\u0434\u044F\u0449\u0438\u0445 \u043A\u043E\u043C\u0430\u043D\u0434\u0430\u0445 " + Math.round(verdict.detailMs / 6e4) + " \u043C\u0438\u043D"
+        );
+        return;
+      }
+      const panic = panicRateVerdict(now, this.humanizeSentAt, this.humanize);
+      if (panic.stop) {
+        this.emergencyStopAuto("panic-rate", panic.count + " \u043A\u043E\u043C\u0430\u043D\u0434 \u0437\u0430 \u043C\u0438\u043D\u0443\u0442\u0443 \u2014 \u0448\u0442\u043E\u0440\u043C/\u0434\u0443\u0431\u043B\u0438, \u043B\u0438\u043C\u0438\u0442 " + this.humanize.panicPerMin);
+      }
+    }
     /** Окно «Безопасность»: применить параметры (санитизация внутри). */
     async setHumanizeSettings(patch) {
       this.humanize = sanitizeHumanizeSettings({ ...this.humanize, ...patch });
@@ -6150,6 +6223,7 @@
       this.tickMapTravel();
       this.tickInvasionTravel();
       this.tickBossFarm();
+      this.tickEmergency();
       this.maybePageReload();
       if (this.state.mode === "observe") return;
       if (this.captchaActive()) return;
@@ -6380,7 +6454,7 @@
       } catch {
         return;
       }
-      const local = "0.3.261116.1025";
+      const local = "0.3.261116.1053";
       if (remote === null || !isNewerVersion(remote, local)) return;
       const firstNotice = this.state.updateAvailable?.remote !== remote;
       this.state.updateAvailable = { remote, local };
@@ -6603,6 +6677,12 @@
         ts: Date.now(),
         lastKeyboard: this.state.lastKeyboard
       });
+      for (const message of result.messages) {
+        if (!message.out) {
+          this.lastIncomingItemAt = Date.now();
+          break;
+        }
+      }
       const effective = history ? result.messages : result.messages.filter((message) => {
         if (message.out) return true;
         if (!this.seenIncomingKeys.has(message.key)) {
@@ -6635,6 +6715,7 @@
           if (known === void 0 || message.ts < known) this.keyboardFirstSeen.set(message.key, message.ts);
         }
         if (changedKeyboardKeys.size > 0) this.deadClicksSince = null;
+        if (changedKeyboardKeys.size > 0) this.lastComposerChangeAt = Date.now();
         const prevBotCmid = new Map(this.lastBotCmid);
         for (const message of effective) {
           if (message.out) continue;
@@ -8254,7 +8335,11 @@
         <div class="row"><span>\u041F\u0435\u0440\u0435\u0440\u044B\u0432 (\u043C\u0438\u043D)</span><input class="human-break" type="number" min="2" max="60" step="1"></div>
         <div class="row"><span>\u041D\u043E\u0447\u044C \u0441 (\u0427\u0427:\u041C\u041C)</span><input class="human-nightfrom" type="text" placeholder="01:00"></div>
         <div class="row"><span>\u041D\u043E\u0447\u044C \u0434\u043E (\u0427\u0427:\u041C\u041C)</span><input class="human-nightto" type="text" placeholder="08:00"></div>
+        <div class="section-title">\u0410\u0432\u0430\u0440\u0438\u0439\u043D\u044B\u0435 \u043E\u0441\u0442\u0430\u043D\u043E\u0432\u044B</div>
+        <div class="row"><span>\u0422\u0438\u0448\u0438\u043D\u0430 \u044D\u043A\u0440\u0430\u043D\u043E\u0432 (\u043C\u0438\u043D)</span><input class="human-silence" type="number" min="2" max="60" step="1"></div>
+        <div class="row"><span>\u041A\u043E\u043C\u0430\u043D\u0434/\u043C\u0438\u043D \u043A\u0440\u0430\u0441\u043D\u0430\u044F \u043B\u0438\u043D\u0438\u044F</span><input class="human-panic" type="number" min="5" max="100" step="1"></div>
         <div class="hint human-note"></div>
+        <div class="hint human-emergency" style="display:none;color:#ff6b6b;font-weight:600"></div>
         <div class="hint">\u041D\u043E\u0447\u044C\u044E \u0438 \u0432 \u043F\u0435\u0440\u0435\u0440\u044B\u0432\u0430\u0445 \u0430\u0432\u0442\u043E \u043C\u043E\u043B\u0447\u0438\u0442 \u043F\u043E\u043B\u043D\u043E\u0441\u0442\u044C\u044E. \u041A\u043E\u043C\u0430\u043D\u0434\u044B \u0441\u0432\u0435\u0440\u0445 \u043B\u0438\u043C\u0438\u0442\u0430 \u0447\u0430\u0441\u0430 \u0436\u0434\u0443\u0442 \u043E\u0441\u0432\u043E\u0431\u043E\u0436\u0434\u0435\u043D\u0438\u044F \u0441\u043B\u043E\u0442\u0430.</div>
       </div>
       <div class="modal modal-map">
@@ -8381,6 +8466,9 @@
         humanNightFrom: get(".human-nightfrom"),
         humanNightTo: get(".human-nightto"),
         humanNote: get(".human-note"),
+        humanSilence: get(".human-silence"),
+        humanPanic: get(".human-panic"),
+        humanEmergencyNote: get(".human-emergency"),
         mapSvg: get(".map-svg"),
         mapStatus: get(".map-status"),
         mapCancel: get(".map-cancel"),
@@ -8405,7 +8493,7 @@
       };
       if (true) {
         const versionEl = shadow.querySelector(".version");
-        if (versionEl) versionEl.textContent = "0.3.261116.1025";
+        if (versionEl) versionEl.textContent = "0.3.261116.1053";
       }
       this.elements.toggle.addEventListener("click", () => actions.onToggleRecording());
       this.elements.updateReload.addEventListener("click", () => {
@@ -8637,6 +8725,8 @@
       num(this.elements.humanSameCmd, "sameCommandMs");
       num(this.elements.humanPlay, "playBlockMin");
       num(this.elements.humanBreak, "breakMin");
+      num(this.elements.humanSilence, "silenceStopMin");
+      num(this.elements.humanPanic, "panicPerMin");
       this.elements.humanNightFrom.addEventListener("change", () => {
         this.actions.onHumanizeChange({ nightFrom: this.elements.humanNightFrom.value.trim() });
       });
@@ -8665,7 +8755,11 @@
       set(this.elements.humanBreak, h.breakMin);
       set(this.elements.humanNightFrom, h.nightFrom);
       set(this.elements.humanNightTo, h.nightTo);
+      set(this.elements.humanSilence, h.silenceStopMin);
+      set(this.elements.humanPanic, h.panicPerMin);
       this.elements.humanNote.textContent = state.humanizePauseNote !== "" ? "\u23F8 " + state.humanizePauseNote : "";
+      this.elements.humanEmergencyNote.style.display = state.humanizeEmergency !== "" ? "block" : "none";
+      if (state.humanizeEmergency !== "") this.elements.humanEmergencyNote.textContent = "\u26D4 " + state.humanizeEmergency + " \u2014 \u0410\u0412\u0422\u041E \u041E\u0421\u0422\u0410\u041D\u041E\u0412\u041B\u0415\u041D\u041E";
     }
     renderRules(state) {
       if (this.openWindowName !== "rules") return;
@@ -9541,7 +9635,7 @@
       }
     };
     try {
-      const version = true ? "0.3.261116.1025" : "?";
+      const version = true ? "0.3.261116.1053" : "?";
       push({ t: Date.now(), k: "init", msg: `recorder ${version} @ ${location.host}` });
       window.addEventListener("error", (event) => {
         recordError("error", `${event.message} @${event.filename}:${event.lineno}`);
@@ -9594,7 +9688,7 @@
     const start = async () => {
       try {
         if (typeof console !== "undefined" && console.info) {
-          console.info(`[Stalker Assistant] v${"0.3.261116.1025"} started`);
+          console.info(`[Stalker Assistant] v${"0.3.261116.1053"} started`);
         }
         runtime.panel = new Panel({
           onToggleRecording: () => {
