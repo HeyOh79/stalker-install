@@ -1,7 +1,7 @@
 /* ==UserScript==
 // @name         Stalker Assistant
 // @namespace    local.stalker-assistant
-// @version      0.3.261115.1230
+// @version      0.3.261116.1025
 // @description  Сбор событий, клавиатур и решений в игре «Сталкер» (VK)
 // @match        https://vk.com/*
 // @match        https://vk.ru/*
@@ -4141,6 +4141,89 @@
     return { action: "wait", location: null, nextCheckMs: BOSS_RECHECK_MS };
   }
 
+  // src/core/humanize.ts
+  var DEFAULT_HUMANIZE = {
+    enabled: true,
+    budgetPerHour: 110,
+    minReactionMs: 3500,
+    jitterMs: 4500,
+    playBlockMin: 50,
+    breakMin: 8,
+    nightFrom: "01:00",
+    nightTo: "08:00",
+    sameCommandMs: 8e3
+  };
+  var asBool = (value, fallback) => typeof value === "boolean" ? value : fallback;
+  var asNum = (value, min, max, fallback) => {
+    const n = typeof value === "number" && Number.isFinite(value) ? Math.round(value) : fallback;
+    return Math.max(min, Math.min(max, n));
+  };
+  var asClock = (value) => {
+    if (typeof value !== "string") return "";
+    const trimmed = value.trim();
+    const match = /^(\d{1,2}):(\d{2})$/.exec(trimmed);
+    if (match === null) return "";
+    const hours = Number(match[1]);
+    const minutes = Number(match[2]);
+    if (hours > 23 || minutes > 59) return "";
+    return trimmed;
+  };
+  function sanitizeHumanizeSettings(raw) {
+    const source = raw ?? {};
+    const d = DEFAULT_HUMANIZE;
+    return {
+      enabled: asBool(source.enabled, d.enabled),
+      budgetPerHour: asNum(source.budgetPerHour, 20, 400, d.budgetPerHour),
+      minReactionMs: asNum(source.minReactionMs, 1e3, 3e4, d.minReactionMs),
+      jitterMs: asNum(source.jitterMs, 0, 3e4, d.jitterMs),
+      playBlockMin: asNum(source.playBlockMin, 10, 240, d.playBlockMin),
+      breakMin: asNum(source.breakMin, 2, 60, d.breakMin),
+      nightFrom: asClock(source.nightFrom) || (source.nightFrom === "" ? "" : d.nightFrom),
+      nightTo: asClock(source.nightTo) || (source.nightTo === "" ? "" : d.nightTo),
+      sameCommandMs: asNum(source.sameCommandMs, 4e3, 6e4, d.sameCommandMs)
+    };
+  }
+  function clockMinutes(value) {
+    const match = /^(\d{1,2}):(\d{2})$/.exec(value.trim());
+    if (match === null) return null;
+    const hours = Number(match[1]);
+    const minutes = Number(match[2]);
+    if (hours > 23 || minutes > 59) return null;
+    return hours * 60 + minutes;
+  }
+  function isNight(now, from, to) {
+    const f = clockMinutes(from);
+    const t = clockMinutes(to);
+    if (f === null || t === null || f === t) return false;
+    const minute = now.getHours() * 60 + now.getMinutes();
+    if (f < t) return minute >= f && minute < t;
+    return minute >= f || minute < t;
+  }
+  function humanDelayMs(baseMs, settings, rand = Math.random) {
+    if (!settings.enabled) return Math.max(0, baseMs);
+    const floor = Math.max(baseMs, settings.minReactionMs);
+    return floor + Math.floor(rand() * settings.jitterMs);
+  }
+  function breakPauseMs(now, activeSince, settings) {
+    if (!settings.enabled) return 0;
+    const cycleMs = (settings.playBlockMin + settings.breakMin) * 60 * 1e3;
+    const elapsed = now - activeSince;
+    if (elapsed < 0) return 0;
+    const inCycle = elapsed % cycleMs;
+    const playMs = settings.playBlockMin * 60 * 1e3;
+    if (inCycle < playMs) return 0;
+    return cycleMs - inCycle;
+  }
+  function budgetGate(now, sentAt, settings) {
+    if (!settings.enabled) return { allowed: true, waitMs: 0 };
+    const hourAgo = now - 60 * 60 * 1e3;
+    const recent = sentAt.filter((ts) => ts > hourAgo);
+    if (recent.length < settings.budgetPerHour) return { allowed: true, waitMs: 0 };
+    const oldest = recent.slice().sort((a, b) => a - b).slice(recent.length - settings.budgetPerHour)[0] ?? 0;
+    const waitMs = oldest + 60 * 60 * 1e3 - now;
+    return { allowed: false, waitMs: Math.max(0, waitMs) };
+  }
+
   // src/core/garden.ts
   var GARDEN_SELL_COMMAND = "\u041F\u0440\u043E\u0434\u0430\u0442\u044C \u0432\u0441\u044E \u0440\u044B\u0431\u0443";
   var GARDEN_RE = /🗑\s*Садок:\s*(\d+)\s*\/\s*(\d+)/u;
@@ -4360,6 +4443,8 @@
       bossFarmEnabled: false,
       bossFarmPhase: "idle",
       bossFarmFallback: null,
+      humanize: sanitizeHumanizeSettings(null),
+      humanizePauseNote: "",
       extLogLastOkAt: 0,
       invasionPhase: "idle",
       invasionStage: 0,
@@ -4527,6 +4612,11 @@
     bossFarmNextCheckAt = 0;
     bossFarmTravelRetries = 0;
     bossFarmLastStatusAt = null;
+    /** Слой человечности: настройки, моменты отправок, старт блока игры. */
+    humanize = sanitizeHumanizeSettings(null);
+    humanizeSentAt = [];
+    humanizeActiveSince = 0;
+    autoLockTabId = null;
     /**
      * Из аномалии пора выходить (страж HP): флаг по чатам, живёт до «Вы вышли
      * из аномалии» / входа в новое поле. После подбора артефакта флаг больше
@@ -4721,6 +4811,8 @@
       this.state.manualTakeover = sanitizeBoolean(await getMeta("manualTakeover", true), true);
       this.anomalyEntryLocked = sanitizeBoolean(await getMeta("anomalyEntryLocked", false), false);
       this.state.anomalyEntryPaused = this.anomalyEntryLocked;
+      this.humanize = sanitizeHumanizeSettings(await getMeta("humanize", null));
+      this.state.humanize = this.humanize;
       this.invasionEnabled = sanitizeBoolean(await getMeta("invasionEnabled", false), false);
       this.bossFarmEnabled = sanitizeBoolean(await getMeta("bossFarmEnabled", false), false);
       this.state.bossFarmEnabled = this.bossFarmEnabled;
@@ -5061,6 +5153,12 @@
       this.state.mode = value;
       if (value !== "auto") this.cancelAutoPlan();
       if (value === "auto") {
+        if (!await this.acquireAutoLock()) {
+          this.state.mode = "advice";
+          this.reportError(new Error("\u0410\u0432\u0442\u043E \u0437\u0430\u043D\u044F\u0442 \u0414\u0420\u0423\u0413\u041E\u0419 \u0432\u043A\u043B\u0430\u0434\u043A\u043E\u0439 \u2014 \u044D\u0442\u0430 \u0432\u043A\u043B\u0430\u0434\u043A\u0430 \u043F\u0435\u0440\u0435\u0432\u0435\u0434\u0435\u043D\u0430 \u0432 \xAB\u041F\u043E\u0434\u0441\u043A\u0430\u0437\u043A\u0443\xBB. \u0417\u0430\u043A\u0440\u043E\u0439 \u043B\u0438\u0448\u043D\u044E\u044E \u0432\u043A\u043B\u0430\u0434\u043A\u0443 \u0438\u043B\u0438 \u0432\u044B\u043A\u043B\u044E\u0447\u0438 \u0442\u0430\u043C \u0410\u0432\u0442\u043E."), "\u0440\u0435\u0436\u0438\u043C");
+          this.panel?.update(this.state);
+          return;
+        }
         this.lastGameActivityAt = Date.now();
         this.evaluateAdvice();
         this.scheduleAuto();
@@ -5099,6 +5197,89 @@
       this.panel?.update(this.state);
     }
     /** Тумблер «Страж HP (аномалия)»: здоровье ≤ 25% в поле — советуем выход. */
+    /** Окно «Безопасность»: применить параметры (санитизация внутри). */
+    async setHumanizeSettings(patch) {
+      this.humanize = sanitizeHumanizeSettings({ ...this.humanize, ...patch });
+      this.state.humanize = this.humanize;
+      await setMeta("humanize", this.humanize);
+      this.panel?.update(this.state);
+    }
+    /**
+     * Единый гейт плана: ночь/перерыв/бюджет откладывают команду, реакция
+     * получает пол+джиттер. Возвращает момент, когда команду можно исполнить
+     * (Date.now()+wait) — планировщики передают его в keepEarliestPlanAt.
+     */
+    humanizeAt(desiredAt, button) {
+      if (!this.humanize.enabled) return desiredAt;
+      const now = Date.now();
+      const notes = [];
+      if (isNight(/* @__PURE__ */ new Date(), this.humanize.nightFrom, this.humanize.nightTo)) {
+        notes.push("\u043D\u043E\u0447\u044C");
+      }
+      if (this.humanizeActiveSince > 0) {
+        const pauseMs = breakPauseMs(now, this.humanizeActiveSince, this.humanize);
+        if (pauseMs > 0) notes.push(`\u043F\u0435\u0440\u0435\u0440\u044B\u0432 ${Math.ceil(pauseMs / 6e4)} \u043C\u0438\u043D`);
+      }
+      const gate = budgetGate(now, this.humanizeSentAt, this.humanize);
+      let deferred = 0;
+      if (!gate.allowed) deferred = Math.max(deferred, gate.waitMs);
+      if (notes.length > 0) deferred = Math.max(deferred, 6e4);
+      const note = notes.length > 0 ? notes.join(", ") : !gate.allowed ? "\u043B\u0438\u043C\u0438\u0442 \u043A\u043E\u043C\u0430\u043D\u0434/\u0447\u0430\u0441" : "";
+      if (note !== this.state.humanizePauseNote) {
+        this.state.humanizePauseNote = note;
+        this.panel?.update(this.state);
+      }
+      if (deferred > 0) {
+        this.logAuto({ event: "humanize-defer", reason: note || "budget", waitMs: Math.round(deferred), button: button.slice(0, 24) });
+        return Math.max(desiredAt, now + deferred);
+      }
+      if (this.state.humanizePauseNote !== "") this.state.humanizePauseNote = "";
+      return Math.max(desiredAt, now + humanDelayMs(0, this.humanize));
+    }
+    /** Фиксация отправки в бюджет часа (после успешного клика/команды). */
+    humanizeTrackCommand() {
+      if (!this.humanize.enabled) return;
+      const now = Date.now();
+      this.humanizeSentAt.push(now);
+      const hourAgo = now - 60 * 60 * 1e3;
+      if (this.humanizeSentAt.length > 600) {
+        this.humanizeSentAt = this.humanizeSentAt.filter((ts) => ts > hourAgo);
+      }
+    }
+    /**
+     * Кросс-вкладочный лок «Авто»: только ОДНА вкладка может auto. Лок — meta
+     * autoLock {id, ts}, пульс каждые 5 с; чужой живой лок (<15 с) — отказ.
+     */
+    async acquireAutoLock() {
+      if (this.autoLockTabId === null) {
+        try {
+          const existing = sessionStorage.getItem("stalkerTabId");
+          this.autoLockTabId = existing ?? String(Math.random()).slice(2) + String(Date.now());
+          sessionStorage.setItem("stalkerTabId", this.autoLockTabId);
+        } catch {
+          this.autoLockTabId = String(Date.now());
+        }
+      }
+      try {
+        const lock = await getMeta("autoLock", null);
+        const now = Date.now();
+        if (lock !== null && lock.id !== this.autoLockTabId && now - lock.ts < 15e3) {
+          return false;
+        }
+        await setMeta("autoLock", { id: this.autoLockTabId, ts: now });
+        this.humanizeActiveSince = this.humanizeActiveSince || now;
+        return true;
+      } catch {
+        return true;
+      }
+    }
+    async heartbeatAutoLock() {
+      if (this.state.mode !== "auto" || this.autoLockTabId === null) return;
+      try {
+        await setMeta("autoLock", { id: this.autoLockTabId, ts: Date.now() });
+      } catch {
+      }
+    }
     /** Тумблер «Боссы»: включение сразу проверяет статус, выключение сбрасывает. */
     async setBossFarmEnabled(value) {
       this.bossFarmEnabled = value;
@@ -5761,6 +5942,7 @@
           this.evaluateAdvice();
         }
         this.tabHeartbeatTick = (this.tabHeartbeatTick + 1) % 5;
+        if (this.tabHeartbeatTick === 0) void this.heartbeatAutoLock();
         if (this.tabChannel !== null && this.tabHeartbeatTick === 0) {
           try {
             this.tabChannel.postMessage({ mode: this.state.mode, gameChat: this.state.isGameChat, ts: Date.now() });
@@ -6198,7 +6380,7 @@
       } catch {
         return;
       }
-      const local = "0.3.261115.1230";
+      const local = "0.3.261116.1025";
       if (remote === null || !isNewerVersion(remote, local)) return;
       const firstNotice = this.state.updateAvailable?.remote !== remote;
       this.state.updateAvailable = { remote, local };
@@ -7195,8 +7377,12 @@
         action.reason,
         delay,
         this.autoClickAtByButton.get(button) ?? null,
-        Date.now()
+        Date.now(),
+        this.humanize.enabled ? this.humanize.sameCommandMs : void 0
       );
+      if (this.humanize.enabled) {
+        delay = Math.max(delay, humanDelayMs(delay, this.humanize));
+      }
       const kept = keepEarliestPlanAt(
         { timerActive: prevTimerActive, plan: prevPlan },
         { button, reason: action.reason, detached: false },
@@ -7240,6 +7426,19 @@
     }
     async runAutoClick() {
       const planned = this.plannedAction;
+      if (planned !== null && this.humanize.enabled) {
+        const gatedAt = this.humanizeAt(planned.at, planned.button);
+        if (gatedAt > planned.at && gatedAt - Date.now() > 1500) {
+          const waitMs = gatedAt - Date.now();
+          const replan = { ...planned, at: gatedAt };
+          this.plannedAction = replan;
+          this.state.autoPlan = { button: planned.button, reason: planned.reason, at: gatedAt };
+          this.autoTimer = window.setTimeout(() => {
+            void this.runAutoClick();
+          }, waitMs);
+          return;
+        }
+      }
       this.cancelAutoPlan();
       if (!planned || this.state.mode !== "auto") return;
       if (Date.now() < this.state.autoRepeatPauseUntil) return;
@@ -7282,6 +7481,7 @@
                 this.lastAutoClickAt = Date.now();
                 this.lastAutoClickSuccessAt = Date.now();
                 this.autoClickAtByButton.set(planned.button, Date.now());
+                this.humanizeTrackCommand();
                 this.state.autoClicks += 1;
                 this.logAuto({ event: "spinner-click", button: planned.button, retries: this.retryCount });
                 return;
@@ -8001,6 +8201,7 @@
           <button class="rotation-btn small" type="button">\u0420\u043E\u0442\u0430\u0446\u0438\u044F</button>
           <button class="rules-btn small" type="button">\u041F\u0440\u0430\u0432\u0438\u043B\u0430</button>
           <button class="delays-btn small" type="button">\u0417\u0430\u0434\u0435\u0440\u0436\u043A\u0438</button>
+        <button class="open-humanize" type="button" title="\u041D\u0430\u0441\u0442\u0440\u043E\u0439\u043A\u0438 \u0447\u0435\u043B\u043E\u0432\u0435\u0447\u043D\u043E\u0441\u0442\u0438: \u043B\u0438\u043C\u0438\u0442 \u043A\u043E\u043C\u0430\u043D\u0434 \u0432 \u0447\u0430\u0441, \u043F\u0430\u0443\u0437\u044B, \u043F\u0435\u0440\u0435\u0440\u044B\u0432\u044B, \u043D\u043E\u0447\u043D\u043E\u0435 \u043E\u043A\u043D\u043E.">\u0411\u0435\u0437\u043E\u043F\u0430\u0441\u043D\u043E\u0441\u0442\u044C</button>
           <button class="map-btn small" type="button">\u041A\u0430\u0440\u0442\u0430</button>
         </div>
         <div class="actions">
@@ -8035,6 +8236,26 @@
         <div class="section-title" style="margin-top:0">\u041F\u0430\u0443\u0437\u0430 \u043F\u0435\u0440\u0435\u0434 \u043D\u0430\u0436\u0430\u0442\u0438\u0435\u043C</div>
         <div class="delays"></div>
         <div class="hint">\u0412 \u0441\u0435\u043A\u0443\u043D\u0434\u0430\u0445, 0 \u2014 \u043D\u0430\u0436\u0438\u043C\u0430\u0442\u044C \u0441\u0440\u0430\u0437\u0443. \u041F\u0440\u0438\u043C\u0435\u043D\u044F\u0435\u0442\u0441\u044F \u0432 \u0440\u0435\u0436\u0438\u043C\u0435 \xAB\u0410\u0432\u0442\u043E\xBB.</div>
+      </div>
+      <div class="modal modal-humanize">
+        <div class="head">
+          <span class="title">\u0411\u0435\u0437\u043E\u043F\u0430\u0441\u043D\u043E\u0441\u0442\u044C</span>
+          <button class="modal-close small" type="button">\u2715</button>
+        </div>
+        <div class="section-title" style="margin-top:0">\u0427\u0435\u043B\u043E\u0432\u0435\u0447\u043D\u043E\u0441\u0442\u044C \u0438\u0433\u0440\u044B</div>
+        <div class="hint" style="margin-top:0">\u041F\u0430\u0440\u0430\u043C\u0435\u0442\u0440\u044B \u0441\u043A\u0440\u044B\u0432\u0430\u044E\u0442 \u0430\u0432\u0442\u043E\u043C\u0430\u0442\u0438\u0437\u043C: \u043F\u043E\u0434\u0431\u0435\u0440\u0438 \u043F\u043E\u0434 \u0441\u0435\u0431\u044F, \u0443 \u0440\u0430\u0437\u043D\u044B\u0445 \u0438\u0433\u0440\u043E\u043A\u043E\u0432 \u0437\u043D\u0430\u0447\u0435\u043D\u0438\u044F \u0434\u043E\u043B\u0436\u043D\u044B \u043E\u0442\u043B\u0438\u0447\u0430\u0442\u044C\u0441\u044F.</div>
+        <div class="row"><span>\u0421\u043B\u043E\u0439 \u0432\u043A\u043B\u044E\u0447\u0451\u043D</span><button class="human-enabled toggle" type="button">\u0432\u043A\u043B</button></div>
+        <div class="row"><span>\u041A\u043E\u043C\u0430\u043D\u0434 \u0432 \u0447\u0430\u0441 (\u043C\u0430\u043A\u0441)</span><input class="human-budget" type="number" min="20" max="400" step="10"></div>
+        <div class="row"><span>\u041F\u0430\u0443\u0437\u0430 \u043F\u0435\u0440\u0435\u0434 \u043A\u043E\u043C\u0430\u043D\u0434\u043E\u0439 (\u043C\u0441)</span><input class="human-minreact" type="number" min="1000" max="30000" step="500"></div>
+        <div class="row"><span>\u0420\u0430\u0437\u0431\u0440\u043E\u0441 \u043F\u0430\u0443\u0437\u044B (\u043C\u0441)</span><input class="human-jitter" type="number" min="0" max="30000" step="500"></div>
+        <div class="row"><span>\u041F\u043E\u0432\u0442\u043E\u0440 \u0442\u043E\u0439 \u0436\u0435 \u043A\u043D\u043E\u043F\u043A\u0438 (\u043C\u0441)</span><input class="human-samecmd" type="number" min="4000" max="60000" step="1000"></div>
+        <div class="section-title">\u0420\u0438\u0442\u043C \u0441\u0435\u0441\u0441\u0438\u0438</div>
+        <div class="row"><span>\u0418\u0433\u0440\u0430 \u0431\u043B\u043E\u043A\u043E\u043C (\u043C\u0438\u043D)</span><input class="human-play" type="number" min="10" max="240" step="5"></div>
+        <div class="row"><span>\u041F\u0435\u0440\u0435\u0440\u044B\u0432 (\u043C\u0438\u043D)</span><input class="human-break" type="number" min="2" max="60" step="1"></div>
+        <div class="row"><span>\u041D\u043E\u0447\u044C \u0441 (\u0427\u0427:\u041C\u041C)</span><input class="human-nightfrom" type="text" placeholder="01:00"></div>
+        <div class="row"><span>\u041D\u043E\u0447\u044C \u0434\u043E (\u0427\u0427:\u041C\u041C)</span><input class="human-nightto" type="text" placeholder="08:00"></div>
+        <div class="hint human-note"></div>
+        <div class="hint">\u041D\u043E\u0447\u044C\u044E \u0438 \u0432 \u043F\u0435\u0440\u0435\u0440\u044B\u0432\u0430\u0445 \u0430\u0432\u0442\u043E \u043C\u043E\u043B\u0447\u0438\u0442 \u043F\u043E\u043B\u043D\u043E\u0441\u0442\u044C\u044E. \u041A\u043E\u043C\u0430\u043D\u0434\u044B \u0441\u0432\u0435\u0440\u0445 \u043B\u0438\u043C\u0438\u0442\u0430 \u0447\u0430\u0441\u0430 \u0436\u0434\u0443\u0442 \u043E\u0441\u0432\u043E\u0431\u043E\u0436\u0434\u0435\u043D\u0438\u044F \u0441\u043B\u043E\u0442\u0430.</div>
       </div>
       <div class="modal modal-map">
         <div class="head">
@@ -8147,6 +8368,19 @@
         mapWindow: get(".modal-map"),
         mapClose: get(".modal-map .modal-close"),
         mapBtn: get(".map-btn"),
+        humanizeBtn: get(".open-humanize"),
+        humanizeWin: get(".modal-humanize"),
+        humanizeClose: get(".modal-humanize .modal-close"),
+        humanEnabled: get(".human-enabled"),
+        humanBudget: get(".human-budget"),
+        humanMinReact: get(".human-minreact"),
+        humanJitter: get(".human-jitter"),
+        humanSameCmd: get(".human-samecmd"),
+        humanPlay: get(".human-play"),
+        humanBreak: get(".human-break"),
+        humanNightFrom: get(".human-nightfrom"),
+        humanNightTo: get(".human-nightto"),
+        humanNote: get(".human-note"),
         mapSvg: get(".map-svg"),
         mapStatus: get(".map-status"),
         mapCancel: get(".map-cancel"),
@@ -8171,7 +8405,7 @@
       };
       if (true) {
         const versionEl = shadow.querySelector(".version");
-        if (versionEl) versionEl.textContent = "0.3.261115.1230";
+        if (versionEl) versionEl.textContent = "0.3.261116.1025";
       }
       this.elements.toggle.addEventListener("click", () => actions.onToggleRecording());
       this.elements.updateReload.addEventListener("click", () => {
@@ -8220,6 +8454,8 @@
       this.elements.restHp.addEventListener("change", () => {
         this.actions.onRestGuardChange(this.elements.restGuard.checked, Number(this.elements.restHp.value) || 60);
       });
+      this.bindWindow("humanize", this.elements.humanizeBtn, this.elements.humanizeClose);
+      this.bindHumanizeFields();
       this.bindWindow("rotation", this.elements.rotationButton, this.elements.rotationClose);
       this.bindWindow("delays", this.elements.delaysButton, this.elements.delaysClose);
       this.bindWindow("rules", this.elements.rulesButton, this.elements.rulesClose);
@@ -8268,6 +8504,8 @@
         this.renderRules(this.lastState);
       }
       this.elements.delaysButton.classList.toggle("window-open", open === "delays");
+      this.elements.humanizeBtn.classList.toggle("window-open", open === "humanize");
+      if (open === "humanize" && this.lastState !== null) this.renderHumanize(this.lastState);
       this.elements.rulesButton.classList.toggle("window-open", open === "rules");
     }
     update(state) {
@@ -8275,6 +8513,7 @@
       const visible = state.isGameChat || state.gamePeerIds.length === 0 && state.currentPeerId !== null;
       this.elements.root.classList.toggle("hidden", !visible);
       if (this.openWindowName === "map") this.renderMap(state);
+      if (this.openWindowName === "humanize") this.renderHumanize(state);
       this.elements.gameNote.classList.toggle("on", visible && !state.isGameChat);
       if (visible && !state.isGameChat) {
         this.elements.gameNote.textContent = "\u0427\u0430\u0442 \u0438\u0433\u0440\u044B \u0435\u0449\u0451 \u043D\u0435 \u043E\u043F\u043E\u0437\u043D\u0430\u043D. \u041E\u0442\u043A\u0440\u043E\u0439 \u0434\u0438\u0430\u043B\u043E\u0433 \xAB\u0421\u0442\u0430\u043B\u043A\u0435\u0440 \u0421\u0435\u0440\u0434\u0446\u0435 \u0427\u0435\u0440\u043D\u043E\u0431\u044B\u043B\u044F\xBB \u2014 \u0430\u0441\u0441\u0438\u0441\u0442\u0435\u043D\u0442 \u0432\u043A\u043B\u044E\u0447\u0438\u0442\u0441\u044F \u0441\u0430\u043C.";
@@ -8384,6 +8623,50 @@
     /** Правила: столько записей и кнопок на запись рисуем в окне (антифриз). */
     static RULES_RENDER_CAP = 200;
     static RULE_BUTTONS_CAP = 10;
+    /** Поля окна «Безопасность»: ввод → onHumanizeChange (кламп в рантайме). */
+    bindHumanizeFields() {
+      const num = (input, key) => {
+        input.addEventListener("change", () => {
+          const value = Number(input.value);
+          if (Number.isFinite(value)) this.actions.onHumanizeChange({ [key]: value });
+        });
+      };
+      num(this.elements.humanBudget, "budgetPerHour");
+      num(this.elements.humanMinReact, "minReactionMs");
+      num(this.elements.humanJitter, "jitterMs");
+      num(this.elements.humanSameCmd, "sameCommandMs");
+      num(this.elements.humanPlay, "playBlockMin");
+      num(this.elements.humanBreak, "breakMin");
+      this.elements.humanNightFrom.addEventListener("change", () => {
+        this.actions.onHumanizeChange({ nightFrom: this.elements.humanNightFrom.value.trim() });
+      });
+      this.elements.humanNightTo.addEventListener("change", () => {
+        this.actions.onHumanizeChange({ nightTo: this.elements.humanNightTo.value.trim() });
+      });
+      this.elements.humanEnabled.addEventListener("click", () => {
+        this.actions.onHumanizeChange({ enabled: this.elements.humanEnabled.textContent !== "\u0432\u043A\u043B" });
+      });
+    }
+    renderHumanize(state) {
+      if (this.openWindowName !== "humanize") return;
+      const h = state.humanize;
+      if (this.elements.humanEnabled.textContent !== (h.enabled ? "\u0432\u043A\u043B" : "\u0432\u044B\u043A\u043B")) {
+        this.elements.humanEnabled.textContent = h.enabled ? "\u0432\u043A\u043B" : "\u0432\u044B\u043A\u043B";
+      }
+      this.elements.humanEnabled.classList.toggle("off", !h.enabled);
+      const set = (input, value) => {
+        if (document.activeElement !== input && input.value !== String(value)) input.value = String(value);
+      };
+      set(this.elements.humanBudget, h.budgetPerHour);
+      set(this.elements.humanMinReact, h.minReactionMs);
+      set(this.elements.humanJitter, h.jitterMs);
+      set(this.elements.humanSameCmd, h.sameCommandMs);
+      set(this.elements.humanPlay, h.playBlockMin);
+      set(this.elements.humanBreak, h.breakMin);
+      set(this.elements.humanNightFrom, h.nightFrom);
+      set(this.elements.humanNightTo, h.nightTo);
+      this.elements.humanNote.textContent = state.humanizePauseNote !== "" ? "\u23F8 " + state.humanizePauseNote : "";
+    }
     renderRules(state) {
       if (this.openWindowName !== "rules") return;
       this.renderEventRules(state.eventRules);
@@ -9258,7 +9541,7 @@
       }
     };
     try {
-      const version = true ? "0.3.261115.1230" : "?";
+      const version = true ? "0.3.261116.1025" : "?";
       push({ t: Date.now(), k: "init", msg: `recorder ${version} @ ${location.host}` });
       window.addEventListener("error", (event) => {
         recordError("error", `${event.message} @${event.filename}:${event.lineno}`);
@@ -9311,7 +9594,7 @@
     const start = async () => {
       try {
         if (typeof console !== "undefined" && console.info) {
-          console.info(`[Stalker Assistant] v${"0.3.261115.1230"} started`);
+          console.info(`[Stalker Assistant] v${"0.3.261116.1025"} started`);
         }
         runtime.panel = new Panel({
           onToggleRecording: () => {
@@ -9360,6 +9643,9 @@
             void runtime.choosePendingButton(buttonText);
           },
           onDismissChoice: () => runtime.dismissPendingChoice(),
+          onHumanizeChange: (patch) => {
+            void runtime.setHumanizeSettings(patch);
+          },
           onAutoDelayChange: (key, valueMs) => {
             void runtime.setAutoDelay(key, valueMs);
           },
