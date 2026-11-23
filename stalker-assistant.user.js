@@ -1,7 +1,7 @@
 /* ==UserScript==
 // @name         Stalker Assistant
 // @namespace    local.stalker-assistant
-// @version      0.3.261123.0954
+// @version      0.3.261123.1015
 // @description  Сбор событий, клавиатур и решений в игре «Сталкер» (VK)
 // @match        https://vk.com/*
 // @match        https://vk.ru/*
@@ -1045,12 +1045,13 @@
       expandTried: false,
       menuButtons: [],
       skillDamage: {},
+      skillCooldown: {},
       lastCmid: 0
     };
   }
   function updateBattleState(state, text, cmid = null) {
     if (state !== null && cmid !== null && cmid < state.lastCmid) return state;
-    const next = state ? { ...state, skillDamage: { ...state.skillDamage } } : emptyState();
+    const next = state ? { ...state, skillDamage: { ...state.skillDamage }, skillCooldown: { ...state.skillCooldown } } : emptyState();
     if (cmid !== null && cmid > next.lastCmid) next.lastCmid = cmid;
     const target = TARGET_RE.exec(text);
     if (target) {
@@ -1074,6 +1075,13 @@
       const damage = Number(hit[2]);
       if (skill && Number.isFinite(damage)) {
         next.skillDamage[skill] = Math.max(next.skillDamage[skill] ?? 0, damage);
+      }
+    }
+    if (/▴ урона по|Промах:/u.test(text)) {
+      for (const key of Object.keys(next.skillCooldown)) {
+        const left = (next.skillCooldown[key] ?? 0) - 1;
+        if (left > 0) next.skillCooldown[key] = left;
+        else delete next.skillCooldown[key];
       }
     }
     const killed = KILLED_RE.exec(text);
@@ -1190,6 +1198,7 @@
   }
   function rotationRuleMatches(rule, state) {
     if (rule.disabled) return false;
+    if (skillOnCooldown(state, rule.button)) return false;
     if (rule.oncePerBattle && state !== null && state.usedButtons.includes(usedButtonKey(rule.button))) return false;
     if (rule.groupOnly && !isGroupBattle(state)) return false;
     if (rule.hpBelow !== null) {
@@ -1202,6 +1211,23 @@
       if (hpPct === null || hpPct >= 100) return false;
     }
     return true;
+  }
+  var SKILL_COOLDOWN_RE = /Навык на перезарядке\s*\((\d+)\)/u;
+  function skillCooldownMoves(text) {
+    const match = SKILL_COOLDOWN_RE.exec(text);
+    if (match === null) return null;
+    const moves = Number(match[1]);
+    return Number.isFinite(moves) ? Math.max(1, moves) : null;
+  }
+  function markSkillCooldown(state, button, moves) {
+    const key = usedButtonKey(button);
+    if (!key) return state;
+    const left = Math.max(state.skillCooldown[key] ?? 0, Math.max(1, moves));
+    return { ...state, skillCooldown: { ...state.skillCooldown, [key]: left } };
+  }
+  function skillOnCooldown(state, button) {
+    const key = usedButtonKey(button);
+    return key !== "" && (state?.skillCooldown[key] ?? 0) > 0;
   }
   function eligibleRotationRules(keyboard, state, rules) {
     const normalized = migrateBattleRotation(rules);
@@ -4488,6 +4514,8 @@
       bossFarmFallback: null,
       humanize: sanitizeHumanizeSettings(null),
       humanizePauseNote: "",
+      humanizeCommandsUsed: 0,
+      humanizeBreakInMs: null,
       humanizeEmergency: "",
       extLogLastOkAt: 0,
       invasionPhase: "idle",
@@ -5356,6 +5384,28 @@
       }
     }
     /**
+     * Счётчики человечности для главной вкладки: сколько команд ушло за
+     * скользящий час и сколько осталось до перерыва. Обновляется секундным
+     * тиком трекинга чата (панель читает state каждый свой update).
+     */
+    refreshHumanizeCounters() {
+      const hourAgo = Date.now() - 60 * 60 * 1e3;
+      this.state.humanizeCommandsUsed = this.humanize.enabled ? this.humanizeSentAt.filter((ts) => ts > hourAgo).length : 0;
+      if (!this.humanize.enabled || this.humanizeActiveSince <= 0) {
+        this.state.humanizeBreakInMs = null;
+        return;
+      }
+      const pauseMs = breakPauseMs(Date.now(), this.humanizeActiveSince, this.humanize);
+      if (pauseMs > 0) {
+        this.state.humanizeBreakInMs = 0;
+        return;
+      }
+      const cycleMs = (this.humanize.playBlockMin + this.humanize.breakMin) * 60 * 1e3;
+      const playMs = this.humanize.playBlockMin * 60 * 1e3;
+      const inCycle = (Date.now() - this.humanizeActiveSince) % cycleMs;
+      this.state.humanizeBreakInMs = Math.max(0, playMs - inCycle);
+    }
+    /**
      * Кросс-вкладочный лок «Авто»: только ОДНА вкладка может auto. Лок — meta
      * autoLock {id, ts}, пульс каждые 5 с; чужой живой лок (<15 с) — отказ.
      */
@@ -6061,6 +6111,7 @@
         this.updateCheckTick = (this.updateCheckTick + 1) % 60;
         if (this.updateCheckTick === 0) void this.checkRemoteUpdate();
         this.state.otherTabAutoUntil = this.lastOtherTabAutoAt > 0 ? this.lastOtherTabAutoAt + OTHER_TAB_AUTO_WINDOW_MS : 0;
+        this.refreshHumanizeCounters();
         this.panel?.update(this.state);
       };
       update();
@@ -6490,7 +6541,7 @@
       } catch {
         return;
       }
-      const local = "0.3.261123.0954";
+      const local = "0.3.261123.1015";
       if (remote === null || !isNewerVersion(remote, local)) return;
       const firstNotice = this.state.updateAvailable?.remote !== remote;
       this.state.updateAvailable = { remote, local };
@@ -6979,6 +7030,30 @@
               }
             }
             this.logAuto({ event: "stale-screen" });
+          }
+          if (fresh && !message.out && message.text) {
+            const cooldownMoves = skillCooldownMoves(message.text);
+            if (cooldownMoves !== null) {
+              const battle = this.battleStates.get(message.peerId);
+              const clicked = this.lastAutoClickButton !== null && Date.now() - this.lastAutoClickSuccessAt < 15e3 ? this.lastAutoClickButton : null;
+              if (battle !== void 0 && clicked !== null) {
+                this.battleStates.set(message.peerId, markSkillCooldown(battle, clicked, cooldownMoves));
+              }
+              if (clicked !== null) {
+                this.clickStreak = nextClickStreak(this.clickStreak, clicked);
+                if (this.clickStreak.count >= AUTO_SAME_CLICK_LIMIT) {
+                  this.state.autoRepeatPauseUntil = Date.now() + AUTO_REPEAT_PAUSE_MS;
+                  this.deadClicksSince ??= Date.now();
+                  this.lastRepeatPauseAt = Date.now();
+                  this.logAuto({ event: "repeat-pause", button: clicked, clicks: this.clickStreak.count, cause: "skill-cooldown", pauseMs: AUTO_REPEAT_PAUSE_MS });
+                  this.clickStreak = null;
+                }
+              }
+              this.logAuto({ event: "skill-cooldown", button: clicked ?? "?", moves: cooldownMoves });
+              this.cancelAutoPlan();
+              this.evaluateAdvice();
+              this.panel?.update(this.state);
+            }
           }
           if (fresh && message.text && isKnockoutText(message.text)) {
             const inline = this.lastInlineKeyboard.get(message.peerId) ?? null;
@@ -8293,6 +8368,8 @@
           <button type="button" data-view="delays">\u0417\u0430\u0434\u0435\u0440\u0436\u043A\u0438</button>
           <button type="button" data-view="humanize" title="\u041D\u0430\u0441\u0442\u0440\u043E\u0439\u043A\u0438 \u0447\u0435\u043B\u043E\u0432\u0435\u0447\u043D\u043E\u0441\u0442\u0438: \u043B\u0438\u043C\u0438\u0442 \u043A\u043E\u043C\u0430\u043D\u0434 \u0432 \u0447\u0430\u0441, \u043F\u0430\u0443\u0437\u044B, \u043F\u0435\u0440\u0435\u0440\u044B\u0432\u044B, \u043D\u043E\u0447\u043D\u043E\u0435 \u043E\u043A\u043D\u043E.">\u0411\u0435\u0437\u043E\u043F\u0430\u0441\u043D\u043E\u0441\u0442\u044C</button>
           <button type="button" data-view="map">\u041A\u0430\u0440\u0442\u0430</button>
+          <button type="button" data-view="invasion">\u041D\u0430\u0448\u0435\u0441\u0442\u0432\u0438\u0435</button>
+          <button type="button" data-view="bossfarm">\u0411\u043E\u0441\u0441\u044B</button>
         </div>
         <div class="panel-body">
         <div class="view view-main active">
@@ -8300,9 +8377,6 @@
         <div class="row"><span>\u0410\u0432\u0442\u043E\u0441\u0431\u0440\u043E\u0441 \u043F\u0440\u0438 \u043F\u0440\u043E\u0441\u0442\u043E\u0435</span><button class="auto-reset toggle" type="button" title="\u041C\u044F\u0433\u043A\u0438\u0439 \u0441\u0431\u0440\u043E\u0441 \u0441\u043E\u0441\u0442\u043E\u044F\u043D\u0438\u044F \u0431\u043E\u0442\u0430, \u0435\u0441\u043B\u0438 \u0430\u0432\u0442\u043E-\u0440\u0435\u0436\u0438\u043C \u0434\u043E\u043B\u0433\u043E \u0431\u0435\u0437 \u043F\u0440\u043E\u0433\u0440\u0435\u0441\u0441\u0430 (3 \u043C\u0438\u043D). \u041B\u043E\u0433\u0438 \u043D\u0435 \u0443\u0434\u0430\u043B\u044F\u044E\u0442\u0441\u044F.">\u0432\u043A\u043B</button></div>
         <div class="row"><span>\u041F\u0430\u0443\u0437\u0430 \u043F\u0440\u0438 \u0440\u0443\u0447\u043D\u044B\u0445 \u043D\u0430\u0436\u0430\u0442\u0438\u044F\u0445</span><button class="manual-toggle toggle" type="button" title="\u0420\u0443\u0447\u043D\u043E\u0435 \u0434\u0435\u0439\u0441\u0442\u0432\u0438\u0435 (\u043D\u0430\u0436\u0430\u0442\u0438\u0435 \u0441 \u0442\u0435\u043B\u0435\u0444\u043E\u043D\u0430 \u0438\u043B\u0438 \u043D\u0430\u0431\u043E\u0440 \u0442\u0435\u043A\u0441\u0442\u0430) \u043E\u0441\u0442\u0430\u043D\u0430\u0432\u043B\u0438\u0432\u0430\u0435\u0442 \u0430\u0432\u0442\u043E\u043D\u0430\u0436\u0430\u0442\u0438\u044F \u043D\u0430 30 \u0441 \u2014 \u0431\u043E\u0442 \u043D\u0435 \u043C\u0435\u0448\u0430\u0435\u0442 \u0438\u0433\u0440\u0430\u0442\u044C \u0440\u0443\u043A\u0430\u043C\u0438.">\u0432\u043A\u043B</button></div>
         <div class="row"><span>\u041F\u0440\u043E\u0434\u0430\u0432\u0430\u0442\u044C \u0441\u0430\u0434\u043E\u043A \u043F\u0440\u0438 \u043F\u043E\u043B\u043D\u043E\u043C</span><button class="garden-sell toggle" type="button" title="\u041A\u043E\u0433\u0434\u0430 \u0441\u0430\u0434\u043E\u043A \u043F\u043E\u043B\u043E\u043D (35/35 \u2014 \u0440\u044B\u0431\u0430 \u043E\u0442\u043F\u0443\u0441\u043A\u0430\u0435\u0442\u0441\u044F), \u0430\u0432\u0442\u043E-\u0440\u0435\u0436\u0438\u043C \u043E\u0442\u043F\u0440\u0430\u0432\u043B\u044F\u0435\u0442 \u0432 \u0447\u0430\u0442 \u043A\u043E\u043C\u0430\u043D\u0434\u044B \xAB\u041F\u0440\u043E\u0434\u0430\u0442\u044C \u0432\u0441\u044E \u0440\u044B\u0431\u0443\xBB.">\u0432\u044B\u043A\u043B</button></div>
-        <div class="row"><span>\u0411\u043E\u0441\u0441\u044B</span><button class="bossfarm toggle" type="button" title="\u0424\u0430\u0440\u043C \u0431\u043E\u0441\u0441\u043E\u0432: \u0431\u043E\u0442 \u043E\u0442\u043F\u0440\u0430\u0432\u043B\u044F\u0435\u0442 \xAB\u0414\u043E\u0441\u0442\u0443\u043F\u043D\u043E\u0441\u0442\u044C \u0431\u043E\u0441\u0441\u043E\u0432\xBB, \u0438\u0434\u0451\u0442 \u043F\u043E \u0441\u043F\u0438\u0441\u043A\u0443 \u0441\u043D\u0438\u0437\u0443 \u0432\u0432\u0435\u0440\u0445 \u2014 \u0410\u043B\u044C\u0444\u0430 \u043F\u043B\u043E\u0442\u044C (\u0421\u0442\u0430\u0440\u0430\u044F \u0446\u0435\u0440\u043A\u043E\u0432\u044C) \u2192 \u041F\u043E\u0442\u0440\u043E\u0448\u0438\u0442\u0435\u043B\u044C/\u041F\u043E\u0433\u043B\u043E\u0442\u0438\u0442\u0435\u043B\u044C (\u0422\u0430\u0439\u043D\u044B\u0439 \u0432\u044B\u0445\u043E\u0434 \u043A \u043F\u043E\u043B\u044E) \u2192 \u0411\u0430\u0440\u043E\u043D (\u0421\u0442\u0430\u0440\u0430\u044F \u0446\u0435\u0440\u043A\u043E\u0432\u044C) \u2192 \u0411\u043B\u0438\u0437\u043D\u0435\u0446\u044B/\u0412\u0430\u0441\u0438\u043B\u0438\u0441\u043A/\u0411\u0430\u0430\u043B (\u041B\u043E\u0449\u0438\u043D\u0430). \u0423\u0431\u0438\u0432\u0430\u0435\u0442 \u0434\u043E\u0441\u0442\u0443\u043F\u043D\u044B\u0445 \u043D\u0430 \u043B\u043E\u043A\u0430\u0446\u0438\u0438, \u043F\u0435\u0440\u0435\u0445\u043E\u0434\u0438\u0442 \u043A \u0441\u043B\u0435\u0434\u0443\u044E\u0449\u0435\u0439, \u0441\u0442\u0430\u0442\u0443\u0441 \u043F\u0435\u0440\u0435\u043F\u0440\u043E\u0432\u0435\u0440\u044F\u0435\u0442\u0441\u044F \u0440\u0430\u0437 \u0432 \u0447\u0430\u0441 \u0438 \u043F\u043E\u0441\u043B\u0435 \u043A\u0430\u0436\u0434\u043E\u0433\u043E \u0431\u043E\u044F. \u0412\u0441\u0435 \u043C\u0435\u0440\u0442\u0432\u044B \u043D\u0430\u0434\u043E\u043B\u0433\u043E \u2014 \u0443\u0445\u043E\u0434\u0438\u0442 \u0432 \u043B\u043E\u043A\u0430\u0446\u0438\u044E \u043E\u0436\u0438\u0434\u0430\u043D\u0438\u044F.">\u0432\u044B\u043A\u043B</button></div>
-        <div class="row bossfarm-fb"><span>\u041B\u043E\u043A\u0430\u0446\u0438\u044F \u043E\u0436\u0438\u0434\u0430\u043D\u0438\u044F</span><input class="bossfarm-loc" type="text" placeholder="\u0435\u0441\u043B\u0438 \u0432\u0441\u0435 \u043C\u0435\u0440\u0442\u0432\u044B &gt;15 \u043C\u0438\u043D" style="flex:1;min-width:0;padding:3px 6px;border:1px solid #3a4a5a;border-radius:6px;background:#10161d;color:#d8e4ee;font-size:11px"><button class="bossfarm-ok" type="button">\u041E\u041A</button></div>
-        <div class="row"><span>\u041D\u0430\u0448\u0435\u0441\u0442\u0432\u0438\u0435</span><button class="invasion toggle" type="button" title="\u0412\u043A\u043B\u044E\u0447\u0438 \u2014 \u0431\u043E\u0442 \u0441\u0440\u0430\u0437\u0443 \u0432\u0435\u0434\u0451\u0442 \u043D\u0430\u0448\u0435\u0441\u0442\u0432\u0438\u0435 \u043F\u043E \u0442\u0440\u0451\u043C \u043B\u043E\u043A\u0430\u0446\u0438\u044F\u043C (\u0421\u043C\u043E\u0442\u0440\u043E\u0432\u0430\u044F \u0432\u044B\u0448\u043A\u0430 \u2192 \u041D\u0430\u0441\u043E\u0441\u043D\u0430\u044F \u0441\u0442\u0430\u043D\u0446\u0438\u044F \u2192 \u0421\u0442\u0430\u0440\u0430\u044F \u0446\u0435\u0440\u043A\u043E\u0432\u044C): \u0432\u0441\u0442\u0443\u043F\u0430\u0435\u0442, \u0431\u044C\u0451\u0442 \u0437\u043E\u043C\u0431\u0438 \u0440\u043E\u0442\u0430\u0446\u0438\u0435\u0439 \u0438 \u043F\u0435\u0440\u0435\u0445\u043E\u0434\u0438\u0442 \u0434\u0430\u043B\u044C\u0448\u0435. \u0412\u044B\u043A\u043B\u044E\u0447\u0438 \u2014 \u0441\u0431\u0440\u043E\u0441.">\u0432\u044B\u043A\u043B</button></div>
         <div class="row"><span>\u0421\u0442\u0440\u0430\u0436 HP (\u0430\u043D\u043E\u043C\u0430\u043B\u0438\u044F)</span><button class="hp-guard toggle" type="button" title="\u0415\u0441\u043B\u0438 \u0432 \u043F\u043E\u043B\u0435 \u0430\u043D\u043E\u043C\u0430\u043B\u0438\u0438 \u0437\u0434\u043E\u0440\u043E\u0432\u044C\u0435 \u043F\u0430\u0434\u0430\u0435\u0442 \u0434\u043E 25% \u0438 \u043D\u0438\u0436\u0435, \u0430\u0432\u0442\u043E \u043F\u0435\u0440\u0435\u0441\u0442\u0430\u0451\u0442 \u0443\u0433\u043B\u0443\u0431\u043B\u044F\u0442\u044C\u0441\u044F \u0438 \u0432\u044B\u0445\u043E\u0434\u0438\u0442 \u0438\u0437 \u0430\u043D\u043E\u043C\u0430\u043B\u0438\u0438 \u2014 \u0434\u043E\u0431\u0438\u0440\u0430\u0442\u044C \u0430\u0440\u0442\u0435\u0444\u0430\u043A\u0442 \u043F\u0440\u0438 \u0442\u0430\u043A\u043E\u043C HP \u0440\u0438\u0441\u043A\u043E\u0432\u0430\u043D\u043D\u043E.">\u0432\u044B\u043A\u043B</button></div>
         <div class="row"><span>\u0427\u0430\u0442</span><b class="peer">\u2014</b></div>
         <div class="row"><span>\u0421\u0430\u0434\u043E\u043A</span><b class="garden">\u2014</b></div>
@@ -8312,6 +8386,8 @@
         <div class="row"><span>\u0420\u0435\u0448\u0435\u043D\u0438\u044F</span><b class="decisions">0</b></div>
         <div class="row"><span>\u041A\u043B\u0430\u0432\u0438\u0430\u0442\u0443\u0440\u044B</span><b class="keyboards">0</b></div>
         <div class="row"><span>\u0410\u0432\u0442\u043E\u043D\u0430\u0436\u0430\u0442\u0438\u044F</span><b class="autoclicks">0</b></div>
+        <div class="row"><span>\u041A\u043E\u043C\u0430\u043D\u0434\u044B/\u0447\u0430\u0441</span><b class="human-count" title="\u041A\u043E\u043C\u0430\u043D\u0434\u044B \u0430\u0432\u0442\u043E \u0437\u0430 \u0441\u043A\u043E\u043B\u044C\u0437\u044F\u0449\u0438\u0439 \u0447\u0430\u0441. \u041B\u0438\u043C\u0438\u0442 \u0438 \u043F\u0430\u0440\u0430\u043C\u0435\u0442\u0440\u044B \u2014 \u0432\u043A\u043B\u0430\u0434\u043A\u0430 \xAB\u0411\u0435\u0437\u043E\u043F\u0430\u0441\u043D\u043E\u0441\u0442\u044C\xBB.">\u2014</b></div>
+        <div class="row"><span>\u041F\u0435\u0440\u0435\u0440\u044B\u0432 \u0447\u0435\u0440\u0435\u0437</span><b class="human-break-count" title="\u0421\u043A\u043E\u043B\u044C\u043A\u043E \u043E\u0441\u0442\u0430\u043B\u043E\u0441\u044C \u0438\u0433\u0440\u0430\u0442\u044C \u0434\u043E \u043F\u0435\u0440\u0435\u0440\u044B\u0432\u0430 (\u0440\u0438\u0442\u043C \xAB\u0438\u0433\u0440\u0430 \u0431\u043B\u043E\u043A\u043E\u043C \u2192 \u043F\u0430\u0443\u0437\u0430\xBB \u2014 \u0432\u043A\u043B\u0430\u0434\u043A\u0430 \xAB\u0411\u0435\u0437\u043E\u043F\u0430\u0441\u043D\u043E\u0441\u0442\u044C\xBB).">\u2014</b></div>
         <div class="advice">
           <div class="advice-title"></div>
           <div class="advice-note"></div>
@@ -8392,7 +8468,24 @@
           <button class="map-cancel" type="button">\u041E\u0442\u043C\u0435\u043D\u0438\u0442\u044C \u043F\u0443\u0442\u044C</button>
         </div>
         <div class="hint">\u041A\u043B\u0438\u043A\u043D\u0438 \u043F\u043E \u0438\u043A\u043E\u043D\u043A\u0435 \u043B\u043E\u043A\u0430\u0446\u0438\u0438 \u2014 \u0431\u043E\u0442 \u043F\u043E\u0441\u043B\u0435 \u0442\u0435\u043A\u0443\u0449\u0435\u0439 \u0430\u043A\u0442\u0438\u0432\u043D\u043E\u0441\u0442\u0438 \u043E\u0442\u043F\u0440\u0430\u0432\u0438\u0442 \u0432 \u0447\u0430\u0442 \xAB\u041F\u0435\u0440\u0435\u0439\u0442\u0438 \u043A \u2026\xBB \u043F\u043E \u043C\u0430\u0440\u0448\u0440\u0443\u0442\u0443 \u0438 \u0431\u0443\u0434\u0435\u0442 \u0436\u0434\u0430\u0442\u044C \u043F\u0440\u0438\u0431\u044B\u0442\u0438\u044F \u043D\u0430 \u043A\u0430\u0436\u0434\u043E\u043C \u0448\u0430\u0433\u0435. \u0411\u0435\u043B\u0430\u044F \u043E\u0431\u0432\u043E\u0434\u043A\u0430 \u2014 \u0442\u044B \u0441\u0435\u0439\u0447\u0430\u0441 \u0442\u0430\u043C; \u0436\u0451\u043B\u0442\u0430\u044F \u2014 \u043C\u0430\u0440\u0448\u0440\u0443\u0442; \u0441\u0438\u0440\u0435\u043D\u0435\u0432\u0430\u044F \u2014 \u0446\u0435\u043B\u044C.</div>
-      </div>
+        </div>
+        <div class="view view-invasion">
+        <div class="head">
+          <span class="title">\u041D\u0430\u0448\u0435\u0441\u0442\u0432\u0438\u0435</span>
+          <button class="modal-close small" type="button">\u2715</button>
+        </div>
+        <div class="row"><span>\u0412\u0435\u0441\u0442\u0438 \u043D\u0430\u0448\u0435\u0441\u0442\u0432\u0438\u0435</span><button class="invasion toggle" type="button" title="\u0412\u043A\u043B\u044E\u0447\u0438 \u2014 \u0431\u043E\u0442 \u0441\u0440\u0430\u0437\u0443 \u0432\u0435\u0434\u0451\u0442 \u043D\u0430\u0448\u0435\u0441\u0442\u0432\u0438\u0435 \u043F\u043E \u0442\u0440\u0451\u043C \u043B\u043E\u043A\u0430\u0446\u0438\u044F\u043C (\u0421\u043C\u043E\u0442\u0440\u043E\u0432\u0430\u044F \u0432\u044B\u0448\u043A\u0430 \u2192 \u041D\u0430\u0441\u043E\u0441\u043D\u0430\u044F \u0441\u0442\u0430\u043D\u0446\u0438\u044F \u2192 \u0421\u0442\u0430\u0440\u0430\u044F \u0446\u0435\u0440\u043A\u043E\u0432\u044C): \u0432\u0441\u0442\u0443\u043F\u0430\u0435\u0442, \u0431\u044C\u0451\u0442 \u0437\u043E\u043C\u0431\u0438 \u0440\u043E\u0442\u0430\u0446\u0438\u0435\u0439 \u0438 \u043F\u0435\u0440\u0435\u0445\u043E\u0434\u0438\u0442 \u0434\u0430\u043B\u044C\u0448\u0435. \u0412\u044B\u043A\u043B\u044E\u0447\u0438 \u2014 \u0441\u0431\u0440\u043E\u0441.">\u0432\u044B\u043A\u043B</button></div>
+        <div class="hint">\u0411\u043E\u0442 \u0432\u0435\u0434\u0451\u0442 \u0432\u0441\u0435 \u0442\u0440\u0438 \u0441\u0442\u0430\u0434\u0438\u0438 \u043D\u0430\u0448\u0435\u0441\u0442\u0432\u0438\u044F \u0441\u0430\u043C: \u043F\u0435\u0440\u0435\u0445\u043E\u0434\u0438\u0442 \u043F\u043E \u043B\u043E\u043A\u0430\u0446\u0438\u044F\u043C, \u0432\u0441\u0442\u0443\u043F\u0430\u0435\u0442 \u0432 \u0431\u043E\u0439 \u0441 \u0437\u043E\u043C\u0431\u0438 \u0438 \u0431\u044C\u0451\u0442 \u0438\u0445 \u0431\u043E\u0435\u0432\u043E\u0439 \u0440\u043E\u0442\u0430\u0446\u0438\u0435\u0439. \u0421\u0442\u0430\u0434\u0438\u044F \u0432\u0438\u0434\u043D\u0430 \u0432 \u043F\u043E\u0434\u0441\u043A\u0430\u0437\u043A\u0435 \u043D\u0430 \u043A\u043D\u043E\u043F\u043A\u0435.</div>
+        </div>
+        <div class="view view-bossfarm">
+        <div class="head">
+          <span class="title">\u0411\u043E\u0441\u0441\u044B</span>
+          <button class="modal-close small" type="button">\u2715</button>
+        </div>
+        <div class="row"><span>\u0424\u0430\u0440\u043C \u0431\u043E\u0441\u0441\u043E\u0432</span><button class="bossfarm toggle" type="button" title="\u0424\u0430\u0440\u043C \u0431\u043E\u0441\u0441\u043E\u0432: \u0431\u043E\u0442 \u043E\u0442\u043F\u0440\u0430\u0432\u043B\u044F\u0435\u0442 \xAB\u0414\u043E\u0441\u0442\u0443\u043F\u043D\u043E\u0441\u0442\u044C \u0431\u043E\u0441\u0441\u043E\u0432\xBB, \u0438\u0434\u0451\u0442 \u043F\u043E \u0441\u043F\u0438\u0441\u043A\u0443 \u0441\u043D\u0438\u0437\u0443 \u0432\u0432\u0435\u0440\u0445 \u2014 \u0410\u043B\u044C\u0444\u0430 \u043F\u043B\u043E\u0442\u044C (\u0421\u0442\u0430\u0440\u0430\u044F \u0446\u0435\u0440\u043A\u043E\u0432\u044C) \u2192 \u041F\u043E\u0442\u0440\u043E\u0448\u0438\u0442\u0435\u043B\u044C/\u041F\u043E\u0433\u043B\u043E\u0442\u0438\u0442\u0435\u043B\u044C (\u0422\u0430\u0439\u043D\u044B\u0439 \u0432\u044B\u0445\u043E\u0434 \u043A \u043F\u043E\u043B\u044E) \u2192 \u0411\u0430\u0440\u043E\u043D (\u0421\u0442\u0430\u0440\u0430\u044F \u0446\u0435\u0440\u043A\u043E\u0432\u044C) \u2192 \u0411\u043B\u0438\u0437\u043D\u0435\u0446\u044B/\u0412\u0430\u0441\u0438\u043B\u0438\u0441\u043A/\u0411\u0430\u0430\u043B (\u041B\u043E\u0449\u0438\u043D\u0430). \u0423\u0431\u0438\u0432\u0430\u0435\u0442 \u0434\u043E\u0441\u0442\u0443\u043F\u043D\u044B\u0445 \u043D\u0430 \u043B\u043E\u043A\u0430\u0446\u0438\u0438, \u043F\u0435\u0440\u0435\u0445\u043E\u0434\u0438\u0442 \u043A \u0441\u043B\u0435\u0434\u0443\u044E\u0449\u0435\u0439, \u0441\u0442\u0430\u0442\u0443\u0441 \u043F\u0435\u0440\u0435\u043F\u0440\u043E\u0432\u0435\u0440\u044F\u0435\u0442\u0441\u044F \u0440\u0430\u0437 \u0432 \u0447\u0430\u0441 \u0438 \u043F\u043E\u0441\u043B\u0435 \u043A\u0430\u0436\u0434\u043E\u0433\u043E \u0431\u043E\u044F. \u0412\u0441\u0435 \u043C\u0435\u0440\u0442\u0432\u044B \u043D\u0430\u0434\u043E\u043B\u0433\u043E \u2014 \u0443\u0445\u043E\u0434\u0438\u0442 \u0432 \u043B\u043E\u043A\u0430\u0446\u0438\u044E \u043E\u0436\u0438\u0434\u0430\u043D\u0438\u044F.">\u0432\u044B\u043A\u043B</button></div>
+        <div class="row bossfarm-fb"><span>\u041B\u043E\u043A\u0430\u0446\u0438\u044F \u043E\u0436\u0438\u0434\u0430\u043D\u0438\u044F</span><input class="bossfarm-loc" type="text" placeholder="\u0435\u0441\u043B\u0438 \u0432\u0441\u0435 \u043C\u0435\u0440\u0442\u0432\u044B &gt;15 \u043C\u0438\u043D" style="flex:1;min-width:0;padding:3px 6px;border:1px solid #3a4a5a;border-radius:6px;background:#10161d;color:#d8e4ee;font-size:11px"><button class="bossfarm-ok" type="button">\u041E\u041A</button></div>
+        <div class="hint">\u0421\u043F\u0438\u0441\u043E\u043A \u0431\u043E\u0441\u0441\u043E\u0432 \u043E\u0431\u0445\u043E\u0434\u0438\u0442\u0441\u044F \u0441\u043D\u0438\u0437\u0443 \u0432\u0432\u0435\u0440\u0445: \u043D\u0430 \u043B\u043E\u043A\u0430\u0446\u0438\u0438 \u0441 \u0434\u043E\u0441\u0442\u0443\u043F\u043D\u044B\u043C \u0431\u043E\u0441\u0441\u043E\u043C \u0431\u043E\u0442 \u0444\u0430\u0440\u043C\u0438\u0442 \u043D\u0430 \u043C\u0435\u0441\u0442\u0435, \u043C\u0451\u0440\u0442\u0432\u044B\u0435 \u043F\u0440\u043E\u043F\u0443\u0441\u043A\u0430\u044E\u0442\u0441\u044F. \u0412\u0441\u0435 \u043D\u0435\u0434\u043E\u0441\u0442\u0443\u043F\u043D\u044B \u0434\u043E\u043B\u044C\u0448\u0435 15 \u043C\u0438\u043D\u0443\u0442 \u2014 \u0431\u043E\u0442 \u0443\u0445\u043E\u0434\u0438\u0442 \u0432 \u043B\u043E\u043A\u0430\u0446\u0438\u044E \u043E\u0436\u0438\u0434\u0430\u043D\u0438\u044F \u0438 \u043F\u0435\u0440\u0435\u043F\u0440\u043E\u0432\u0435\u0440\u044F\u0435\u0442 \u0441\u0442\u0430\u0442\u0443\u0441 \u043A \u0441\u0440\u043E\u043A\u0443 \u0432\u043E\u0441\u043A\u0440\u0435\u0448\u0435\u043D\u0438\u044F.</div>
+        </div>
         <div class="view view-rules">
         <div class="head">
           <span class="title">\u041F\u0440\u0430\u0432\u0438\u043B\u0430</span>
@@ -8484,6 +8577,12 @@
         decisions: get(".decisions"),
         keyboards: get(".keyboards"),
         autoClicks: get(".autoclicks"),
+        humanCount: get(".human-count"),
+        humanBreakCount: get(".human-break-count"),
+        invasionView: get(".view-invasion"),
+        invasionClose: get(".view-invasion .modal-close"),
+        bossfarmView: get(".view-bossfarm"),
+        bossfarmClose: get(".view-bossfarm .modal-close"),
         advice: get(".advice"),
         adviceTitle: get(".advice-title"),
         adviceNote: get(".advice-note"),
@@ -8537,7 +8636,7 @@
       };
       if (true) {
         const versionEl = shadow.querySelector(".version");
-        if (versionEl) versionEl.textContent = "0.3.261123.0954";
+        if (versionEl) versionEl.textContent = "0.3.261123.1015";
       }
       this.elements.toggle.addEventListener("click", () => actions.onToggleRecording());
       this.elements.updateReload.addEventListener("click", () => {
@@ -8625,7 +8724,9 @@
         this.elements.delaysClose,
         this.elements.rulesClose,
         this.elements.mapClose,
-        this.elements.humanizeClose
+        this.elements.humanizeClose,
+        this.elements.invasionClose,
+        this.elements.bossfarmClose
       ]) {
         close.addEventListener("click", () => this.closeWindow());
       }
@@ -8644,6 +8745,8 @@
       this.elements.rulesWindow.classList.toggle("active", open === "rules");
       this.elements.mapWindow.classList.toggle("active", open === "map");
       this.elements.humanizeWin.classList.toggle("active", open === "humanize");
+      this.elements.invasionView.classList.toggle("active", open === "invasion");
+      this.elements.bossfarmView.classList.toggle("active", open === "bossfarm");
       this.elements.mainTab.classList.toggle("active", open === null);
       for (const [name, button] of this.elements.tabButtons) {
         button.classList.toggle("active", open === name);
@@ -8756,6 +8859,17 @@
       this.elements.decisions.textContent = String(state.counts.decisions);
       this.elements.keyboards.textContent = String(state.counts.keyboards);
       this.elements.autoClicks.textContent = String(state.autoClicks);
+      const human = state.humanize;
+      if (human.enabled) {
+        this.elements.humanCount.textContent = `${state.humanizeCommandsUsed}/${human.budgetPerHour}`;
+        this.elements.humanCount.classList.toggle("full", state.humanizeCommandsUsed >= human.budgetPerHour);
+        const breakIn = state.humanizeBreakInMs;
+        this.elements.humanBreakCount.textContent = breakIn === null ? "\u2014" : breakIn === 0 ? "\u0438\u0434\u0451\u0442" : `${Math.max(1, Math.ceil(breakIn / 6e4))} \u043C\u0438\u043D`;
+      } else {
+        this.elements.humanCount.textContent = "\u2014";
+        this.elements.humanCount.classList.remove("full");
+        this.elements.humanBreakCount.textContent = "\u2014";
+      }
       for (const key of DELAY_KEYS) {
         const input = this.elements.delayInputs.get(key);
         if (!input) continue;
@@ -9695,7 +9809,7 @@
       }
     };
     try {
-      const version = true ? "0.3.261123.0954" : "?";
+      const version = true ? "0.3.261123.1015" : "?";
       push({ t: Date.now(), k: "init", msg: `recorder ${version} @ ${location.host}` });
       window.addEventListener("error", (event) => {
         recordError("error", `${event.message} @${event.filename}:${event.lineno}`);
@@ -9748,7 +9862,7 @@
     const start = async () => {
       try {
         if (typeof console !== "undefined" && console.info) {
-          console.info(`[Stalker Assistant] v${"0.3.261123.0954"} started`);
+          console.info(`[Stalker Assistant] v${"0.3.261123.1015"} started`);
         }
         runtime.panel = new Panel({
           onToggleRecording: () => {
