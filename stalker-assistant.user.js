@@ -1,7 +1,7 @@
 /* ==UserScript==
 // @name         Stalker Assistant
 // @namespace    local.stalker-assistant
-// @version      0.3.261123.0904
+// @version      0.3.261123.0930
 // @description  Сбор событий, клавиатур и решений в игре «Сталкер» (VK)
 // @match        https://vk.com/*
 // @match        https://vk.ru/*
@@ -6466,7 +6466,7 @@
       } catch {
         return;
       }
-      const local = "0.3.261123.0904";
+      const local = "0.3.261123.0930";
       if (remote === null || !isNewerVersion(remote, local)) return;
       const firstNotice = this.state.updateAvailable?.remote !== remote;
       this.state.updateAvailable = { remote, local };
@@ -8084,8 +8084,14 @@
         .panel {
           position: fixed; right: 14px; bottom: 14px; z-index: 2147483647;
           width: 252px; box-sizing: border-box; padding: 10px 12px;
+          display: flex; flex-direction: column; max-height: calc(100vh - 28px);
         }
         .panel.hidden { display: none; }
+        /* \u041A\u043E\u043D\u0442\u0435\u043D\u0442 \u0432\u0438\u0434\u043E\u0432 \u043F\u0440\u043E\u0435\u043A\u0442\u0438\u0440\u043E\u0432\u0430\u043B\u0441\u044F \u043F\u043E\u0434 340px-\u043C\u043E\u0434\u0430\u043B\u043A\u0438: \u043D\u0430 \u0433\u043B\u0430\u0432\u043D\u043E\u0439 \u043F\u0430\u043D\u0435\u043B\u0438
+           252px \u0434\u043B\u0438\u043D\u043D\u044B\u0435 \u043F\u043E\u0434\u043F\u0438\u0441\u0438 \u043F\u0435\u0440\u0435\u043D\u043E\u0441\u044F\u0442\u0441\u044F \u2014 \u043E\u0442\u043A\u0440\u044B\u0442\u044B\u0439 \u0432\u0438\u0434 \u0447\u0443\u0442\u044C \u0440\u0430\u0441\u0448\u0438\u0440\u044F\u0435\u0442
+           \u043F\u0430\u043D\u0435\u043B\u044C, \u043A\u0430\u0440\u0442\u0430 \u2014 \u0435\u0449\u0451 \u0448\u0438\u0440\u0435. */
+        .panel.v-open { width: 300px; }
+        .panel.v-map { width: min(94vw, 440px); }
         .game-note {
           display: none; margin-top: 8px; padding: 7px 8px;
           border: 1px solid #39424d; border-radius: 6px; background: #1d222a;
@@ -8110,7 +8116,6 @@
           color: #a0e0b8; font-size: 11px;
         }
         .blind-note.on { display: block; }
-        .modal.modal-map { width: min(94vw, (94vh - 150px) * 1.316); max-height: 94vh; overflow: hidden; }
         .map-svg { display: block; width: 100%; height: auto; aspect-ratio: 667 / 507; background: #0d1218; border: 1px solid #223140; border-radius: 6px; }
         .anomaly-note {
           display: none; margin-top: 8px; padding: 7px 8px;
@@ -8139,17 +8144,14 @@
           background: #1d3245; color: #cfe4f8; font-size: 11px;
         }
         .update-note button:hover { background: #24405a; }
-        .backdrop {
-          display: none; position: fixed; inset: 0; z-index: 2147483646;
-          background: rgba(0,0,0,.45);
-        }
-        .backdrop.open { display: block; }
-        .modal {
-          display: none; position: fixed; top: 50%; left: 50%;
-          transform: translate(-50%, -50%); z-index: 2147483647;
-          width: 340px; max-width: calc(100vw - 24px);
-          max-height: 80vh; overflow-y: auto; box-sizing: border-box; padding: 12px 14px;
-        }
+        /* \u0412\u043A\u043B\u0430\u0434\u043A\u0438 \u0432\u043C\u0435\u0441\u0442\u043E \u043E\u0442\u0434\u0435\u043B\u044C\u043D\u044B\u0445 \u043E\u043A\u043E\u043D: \u043C\u043E\u0434\u0430\u043B\u043A\u0438 \u0443\u0435\u0437\u0436\u0430\u043B\u0438 \u0437\u0430 \u044D\u043A\u0440\u0430\u043D (\u043B\u043E\u0433 23.11). */
+        .views-tabs { display: flex; flex-wrap: wrap; gap: 4px; margin: 4px 0 8px; flex: none; }
+        .views-tabs button { padding: 3px 6px; font-size: 10px; }
+        .views-tabs button.active { border-color: #8a6d1f; background: #3a2f14; }
+        .panel-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; }
+        .view { display: none; }
+        .view.active { display: block; }
+        .view-humanize .row input { width: 72px; flex: none; }
         .map-node { cursor: pointer; }
         .map-node:hover circle { stroke: #ffffff; stroke-width: 2; }
         .map-node circle { stroke-width: 1.5; }
@@ -8160,7 +8162,6 @@
         .map-actions { margin-top: 8px; }
         .map-cancel { display: none; padding: 4px 8px; border: 1px solid #3a4a5a; border-radius: 6px; background: #18222c; color: #d8e4ee; font-size: 11px; cursor: pointer; }
         .map-cancel.on { display: inline-block; }
-        .modal.open { display: block; }
         .rule { padding: 6px 0; border-bottom: 1px solid #2a323c; }
         .rule:last-child { border-bottom: none; }
         .rule-head { display: flex; align-items: center; gap: 4px; }
@@ -8261,6 +8262,16 @@
             <button class="update-install" type="button" title="\u041E\u0442\u043A\u0440\u043E\u0435\u0442 \u0441\u0442\u0440\u0430\u043D\u0438\u0446\u0443 \u0443\u0441\u0442\u0430\u043D\u043E\u0432\u043A\u0438 Tampermonkey \u2014 \u043D\u0430\u0436\u043C\u0438 \u0442\u0430\u043C \xAB\u041F\u0435\u0440\u0435\u0443\u0441\u0442\u0430\u043D\u043E\u0432\u0438\u0442\u044C\xBB, \u0437\u0430\u0442\u0435\u043C \u0432\u0435\u0440\u043D\u0438\u0441\u044C \u0438 \u043F\u0435\u0440\u0435\u0437\u0430\u0433\u0440\u0443\u0437\u0438 \u0432\u043A\u043B\u0430\u0434\u043A\u0443.">\u0423\u0441\u0442\u0430\u043D\u043E\u0432\u043A\u0430</button>
           </div>
         </div>
+        <div class="views-tabs">
+          <button type="button" data-view="" class="active">\u0413\u043B\u0430\u0432\u043D\u0430\u044F</button>
+          <button type="button" data-view="rotation">\u0420\u043E\u0442\u0430\u0446\u0438\u044F</button>
+          <button type="button" data-view="rules">\u041F\u0440\u0430\u0432\u0438\u043B\u0430</button>
+          <button type="button" data-view="delays">\u0417\u0430\u0434\u0435\u0440\u0436\u043A\u0438</button>
+          <button type="button" data-view="humanize" title="\u041D\u0430\u0441\u0442\u0440\u043E\u0439\u043A\u0438 \u0447\u0435\u043B\u043E\u0432\u0435\u0447\u043D\u043E\u0441\u0442\u0438: \u043B\u0438\u043C\u0438\u0442 \u043A\u043E\u043C\u0430\u043D\u0434 \u0432 \u0447\u0430\u0441, \u043F\u0430\u0443\u0437\u044B, \u043F\u0435\u0440\u0435\u0440\u044B\u0432\u044B, \u043D\u043E\u0447\u043D\u043E\u0435 \u043E\u043A\u043D\u043E.">\u0411\u0435\u0437\u043E\u043F\u0430\u0441\u043D\u043E\u0441\u0442\u044C</button>
+          <button type="button" data-view="map">\u041A\u0430\u0440\u0442\u0430</button>
+        </div>
+        <div class="panel-body">
+        <div class="view view-main active">
         <div class="row"><span>\u0420\u0435\u0436\u0438\u043C</span><button class="mode" type="button">\u041D\u0430\u0431\u043B\u044E\u0434\u0435\u043D\u0438\u0435</button></div>
         <div class="row"><span>\u0410\u0432\u0442\u043E\u0441\u0431\u0440\u043E\u0441 \u043F\u0440\u0438 \u043F\u0440\u043E\u0441\u0442\u043E\u0435</span><button class="auto-reset toggle" type="button" title="\u041C\u044F\u0433\u043A\u0438\u0439 \u0441\u0431\u0440\u043E\u0441 \u0441\u043E\u0441\u0442\u043E\u044F\u043D\u0438\u044F \u0431\u043E\u0442\u0430, \u0435\u0441\u043B\u0438 \u0430\u0432\u0442\u043E-\u0440\u0435\u0436\u0438\u043C \u0434\u043E\u043B\u0433\u043E \u0431\u0435\u0437 \u043F\u0440\u043E\u0433\u0440\u0435\u0441\u0441\u0430 (3 \u043C\u0438\u043D). \u041B\u043E\u0433\u0438 \u043D\u0435 \u0443\u0434\u0430\u043B\u044F\u044E\u0442\u0441\u044F.">\u0432\u043A\u043B</button></div>
         <div class="row"><span>\u041F\u0430\u0443\u0437\u0430 \u043F\u0440\u0438 \u0440\u0443\u0447\u043D\u044B\u0445 \u043D\u0430\u0436\u0430\u0442\u0438\u044F\u0445</span><button class="manual-toggle toggle" type="button" title="\u0420\u0443\u0447\u043D\u043E\u0435 \u0434\u0435\u0439\u0441\u0442\u0432\u0438\u0435 (\u043D\u0430\u0436\u0430\u0442\u0438\u0435 \u0441 \u0442\u0435\u043B\u0435\u0444\u043E\u043D\u0430 \u0438\u043B\u0438 \u043D\u0430\u0431\u043E\u0440 \u0442\u0435\u043A\u0441\u0442\u0430) \u043E\u0441\u0442\u0430\u043D\u0430\u0432\u043B\u0438\u0432\u0430\u0435\u0442 \u0430\u0432\u0442\u043E\u043D\u0430\u0436\u0430\u0442\u0438\u044F \u043D\u0430 30 \u0441 \u2014 \u0431\u043E\u0442 \u043D\u0435 \u043C\u0435\u0448\u0430\u0435\u0442 \u0438\u0433\u0440\u0430\u0442\u044C \u0440\u0443\u043A\u0430\u043C\u0438.">\u0432\u043A\u043B</button></div>
@@ -8291,21 +8302,13 @@
         </div>
         <div class="plan"></div>
         <div class="actions">
-          <button class="rotation-btn small" type="button">\u0420\u043E\u0442\u0430\u0446\u0438\u044F</button>
-          <button class="rules-btn small" type="button">\u041F\u0440\u0430\u0432\u0438\u043B\u0430</button>
-          <button class="delays-btn small" type="button">\u0417\u0430\u0434\u0435\u0440\u0436\u043A\u0438</button>
-        <button class="open-humanize" type="button" title="\u041D\u0430\u0441\u0442\u0440\u043E\u0439\u043A\u0438 \u0447\u0435\u043B\u043E\u0432\u0435\u0447\u043D\u043E\u0441\u0442\u0438: \u043B\u0438\u043C\u0438\u0442 \u043A\u043E\u043C\u0430\u043D\u0434 \u0432 \u0447\u0430\u0441, \u043F\u0430\u0443\u0437\u044B, \u043F\u0435\u0440\u0435\u0440\u044B\u0432\u044B, \u043D\u043E\u0447\u043D\u043E\u0435 \u043E\u043A\u043D\u043E.">\u0411\u0435\u0437\u043E\u043F\u0430\u0441\u043D\u043E\u0441\u0442\u044C</button>
-          <button class="map-btn small" type="button">\u041A\u0430\u0440\u0442\u0430</button>
-        </div>
-        <div class="actions">
           <button class="export primary" type="button">\u042D\u043A\u0441\u043F\u043E\u0440\u0442</button>
           <button class="clear danger" type="button">\u041E\u0447\u0438\u0441\u0442\u0438\u0442\u044C</button>
         </div>
         <div class="error"></div>
         <div class="hint">\u041B\u043E\u043A\u0430\u043B\u044C\u043D\u043E, \u0431\u0435\u0437 \u043E\u0442\u043F\u0440\u0430\u0432\u043A\u0438. \u041D\u0435\u0442 \u043A\u043B\u0430\u0432\u0438\u0430\u0442\u0443\u0440 \u2014 \u043F\u0435\u0440\u0435\u0437\u0430\u0433\u0440\u0443\u0437\u0438 \u0441\u0442\u0440\u0430\u043D\u0438\u0446\u0443. v<span class="version">?</span></div>
-      </div>
-      <div class="backdrop"></div>
-      <div class="modal modal-rotation">
+        </div>
+        <div class="view view-rotation">
         <div class="head">
           <span class="title">\u0420\u043E\u0442\u0430\u0446\u0438\u044F \u0431\u043E\u044F</span>
           <button class="modal-close small" type="button">\u2715</button>
@@ -8321,7 +8324,7 @@
         <div class="cands"></div>
         <div class="hint">\u0421\u043E\u0432\u0435\u0442\u0443\u0435\u0442\u0441\u044F \u043F\u0435\u0440\u0432\u043E\u0435 \u043F\u0440\u0430\u0432\u0438\u043B\u043E, \u0447\u044C\u044F \u043A\u043D\u043E\u043F\u043A\u0430 \u0435\u0441\u0442\u044C \u0432 \u043A\u043B\u0430\u0432\u0438\u0430\u0442\u0443\u0440\u0435 \u0438 \u0447\u044C\u0438 \u0443\u0441\u043B\u043E\u0432\u0438\u044F \u0432\u044B\u043F\u043E\u043B\u043D\u0435\u043D\u044B. \u0423\u0441\u043B\u043E\u0432\u0438\u044F: \xABHP \u2264 N%\xBB \u2014 \u0437\u0434\u043E\u0440\u043E\u0432\u044C\u0435 \u0438\u0433\u0440\u043E\u043A\u0430, \xAB\u0413\u0440\u0443\u043F\u043F\u0430 \u0432\u0440\u0430\u0433\u043E\u0432\xBB \u2014 \u043F\u0440\u043E\u0442\u0438\u0432\u043D\u0438\u043A \u043E\u0434\u0438\u043D \u0438\u0437 3 \u0438 \u0431\u043E\u043B\u0435\u0435, \xAB1 \u0440\u0430\u0437 \u0437\u0430 \u0431\u043E\u0439\xBB \u2014 \u043A\u043D\u043E\u043F\u043A\u0430 \u0435\u0449\u0451 \u043D\u0435 \u043D\u0430\u0436\u0438\u043C\u0430\u043B\u0430\u0441\u044C \u0432 \u044D\u0442\u043E\u043C \u0431\u043E\u044E (\u0433\u0440\u0430\u043D\u0430\u0442\u043E\u043C\u0451\u0442 \xAB\u042D\u043F\u043E\u0441\xBB). \u0410\u043F\u0442\u0435\u0447\u043A\u0438 \u0434\u043E\u0431\u0430\u0432\u043B\u044F\u0439 \u0441 \u043F\u043E\u0440\u043E\u0433\u043E\u043C HP \u0438 \u043F\u043E\u0432\u0442\u043E\u0440\u044F\u0439 \u043F\u043E \u0447\u0438\u0441\u043B\u0443 \u0441\u043B\u043E\u0442\u043E\u0432.</div>
       </div>
-      <div class="modal modal-delays">
+        <div class="view view-delays">
         <div class="head">
           <span class="title">\u0417\u0430\u0434\u0435\u0440\u0436\u043A\u0438 \u0430\u0432\u0442\u043E</span>
           <button class="modal-close small" type="button">\u2715</button>
@@ -8330,7 +8333,7 @@
         <div class="delays"></div>
         <div class="hint">\u0412 \u0441\u0435\u043A\u0443\u043D\u0434\u0430\u0445, 0 \u2014 \u043D\u0430\u0436\u0438\u043C\u0430\u0442\u044C \u0441\u0440\u0430\u0437\u0443. \u041F\u0440\u0438\u043C\u0435\u043D\u044F\u0435\u0442\u0441\u044F \u0432 \u0440\u0435\u0436\u0438\u043C\u0435 \xAB\u0410\u0432\u0442\u043E\xBB.</div>
       </div>
-      <div class="modal modal-humanize">
+        <div class="view view-humanize">
         <div class="head">
           <span class="title">\u0411\u0435\u0437\u043E\u043F\u0430\u0441\u043D\u043E\u0441\u0442\u044C</span>
           <button class="modal-close small" type="button">\u2715</button>
@@ -8354,7 +8357,7 @@
         <div class="hint human-emergency" style="display:none;color:#ff6b6b;font-weight:600"></div>
         <div class="hint">\u041D\u043E\u0447\u044C\u044E \u0438 \u0432 \u043F\u0435\u0440\u0435\u0440\u044B\u0432\u0430\u0445 \u0430\u0432\u0442\u043E \u043C\u043E\u043B\u0447\u0438\u0442 \u043F\u043E\u043B\u043D\u043E\u0441\u0442\u044C\u044E. \u041A\u043E\u043C\u0430\u043D\u0434\u044B \u0441\u0432\u0435\u0440\u0445 \u043B\u0438\u043C\u0438\u0442\u0430 \u0447\u0430\u0441\u0430 \u0436\u0434\u0443\u0442 \u043E\u0441\u0432\u043E\u0431\u043E\u0436\u0434\u0435\u043D\u0438\u044F \u0441\u043B\u043E\u0442\u0430.</div>
       </div>
-      <div class="modal modal-map">
+        <div class="view view-map">
         <div class="head">
           <span class="title">\u041A\u0430\u0440\u0442\u0430 \u043B\u043E\u043A\u0430\u0446\u0438\u0439</span>
           <button class="modal-close small" type="button">\u2715</button>
@@ -8366,7 +8369,7 @@
         </div>
         <div class="hint">\u041A\u043B\u0438\u043A\u043D\u0438 \u043F\u043E \u0438\u043A\u043E\u043D\u043A\u0435 \u043B\u043E\u043A\u0430\u0446\u0438\u0438 \u2014 \u0431\u043E\u0442 \u043F\u043E\u0441\u043B\u0435 \u0442\u0435\u043A\u0443\u0449\u0435\u0439 \u0430\u043A\u0442\u0438\u0432\u043D\u043E\u0441\u0442\u0438 \u043E\u0442\u043F\u0440\u0430\u0432\u0438\u0442 \u0432 \u0447\u0430\u0442 \xAB\u041F\u0435\u0440\u0435\u0439\u0442\u0438 \u043A \u2026\xBB \u043F\u043E \u043C\u0430\u0440\u0448\u0440\u0443\u0442\u0443 \u0438 \u0431\u0443\u0434\u0435\u0442 \u0436\u0434\u0430\u0442\u044C \u043F\u0440\u0438\u0431\u044B\u0442\u0438\u044F \u043D\u0430 \u043A\u0430\u0436\u0434\u043E\u043C \u0448\u0430\u0433\u0435. \u0411\u0435\u043B\u0430\u044F \u043E\u0431\u0432\u043E\u0434\u043A\u0430 \u2014 \u0442\u044B \u0441\u0435\u0439\u0447\u0430\u0441 \u0442\u0430\u043C; \u0436\u0451\u043B\u0442\u0430\u044F \u2014 \u043C\u0430\u0440\u0448\u0440\u0443\u0442; \u0441\u0438\u0440\u0435\u043D\u0435\u0432\u0430\u044F \u2014 \u0446\u0435\u043B\u044C.</div>
       </div>
-      <div class="modal modal-rules">
+        <div class="view view-rules">
         <div class="head">
           <span class="title">\u041F\u0440\u0430\u0432\u0438\u043B\u0430</span>
           <button class="modal-close small" type="button">\u2715</button>
@@ -8387,7 +8390,9 @@
         <div class="section-title">\u0420\u0430\u0437\u0432\u0438\u043B\u043A\u0438</div>
         <div class="hint">\u0412\u044B\u0431\u043E\u0440 \u043A\u043D\u043E\u043F\u043A\u0438 \u0434\u043B\u044F \u043A\u0430\u0436\u0434\u043E\u0439 \u0440\u0430\u0437\u0432\u0438\u043B\u043A\u0438. \xAB\u0421\u043F\u0440\u0430\u0448\u0438\u0432\u0430\u0442\u044C\xBB \u2014 \u0430\u0432\u0442\u043E-\u0440\u0435\u0436\u0438\u043C \u0431\u0443\u0434\u0435\u0442 \u0436\u0434\u0430\u0442\u044C \u0442\u0432\u043E\u0435\u0433\u043E \u0440\u0435\u0448\u0435\u043D\u0438\u044F.</div>
         <div class="rules-list"></div>
-      </div>
+        </div>
+        </div>
+        </div>
     `;
       document.documentElement.appendChild(host);
       const get = (selector) => {
@@ -8418,6 +8423,11 @@
         row.append(label, input);
         delaysContainer.appendChild(row);
         delayInputs.set(key, input);
+      }
+      const tabButtons = /* @__PURE__ */ new Map();
+      for (const button of Array.from(shadow.querySelectorAll(".views-tabs button[data-view]"))) {
+        const name = button.dataset.view ?? "";
+        if (name !== "") tabButtons.set(name, button);
       }
       this.elements = {
         root: get(".panel"),
@@ -8460,14 +8470,14 @@
         error: get(".error"),
         exportButton: get(".export"),
         clearButton: get(".clear"),
-        backdrop: get(".backdrop"),
-        rotationButton: get(".rotation-btn"),
-        mapWindow: get(".modal-map"),
-        mapClose: get(".modal-map .modal-close"),
-        mapBtn: get(".map-btn"),
-        humanizeBtn: get(".open-humanize"),
-        humanizeWin: get(".modal-humanize"),
-        humanizeClose: get(".modal-humanize .modal-close"),
+        panelBody: get(".panel-body"),
+        viewMain: get(".view-main"),
+        mainTab: get('.views-tabs button[data-view=""]'),
+        tabButtons,
+        mapWindow: get(".view-map"),
+        mapClose: get(".view-map .modal-close"),
+        humanizeWin: get(".view-humanize"),
+        humanizeClose: get(".view-humanize .modal-close"),
         humanEnabled: get(".human-enabled"),
         humanBudget: get(".human-budget"),
         humanMinReact: get(".human-minreact"),
@@ -8484,19 +8494,17 @@
         mapSvg: get(".map-svg"),
         mapStatus: get(".map-status"),
         mapCancel: get(".map-cancel"),
-        rotationWindow: get(".modal-rotation"),
-        rotationClose: get(".modal-rotation .modal-close"),
+        rotationWindow: get(".view-rotation"),
+        rotationClose: get(".view-rotation .modal-close"),
         rotationList: get(".rotation"),
-        autoExpand: get(".modal-rotation .auto-expand"),
+        autoExpand: get(".view-rotation .auto-expand"),
         extras: get(".extras"),
         candidates: get(".cands"),
-        delaysButton: get(".delays-btn"),
-        delaysWindow: get(".modal-delays"),
-        delaysClose: get(".modal-delays .modal-close"),
+        delaysWindow: get(".view-delays"),
+        delaysClose: get(".view-delays .modal-close"),
         delayInputs,
-        rulesButton: get(".rules-btn"),
-        rulesWindow: get(".modal-rules"),
-        rulesClose: get(".modal-rules .modal-close"),
+        rulesWindow: get(".view-rules"),
+        rulesClose: get(".view-rules .modal-close"),
         eventsList: get(".events-list"),
         anomalyTypesList: get(".anomaly-types-list"),
         restGuard: get(".rest-guard"),
@@ -8505,7 +8513,7 @@
       };
       if (true) {
         const versionEl = shadow.querySelector(".version");
-        if (versionEl) versionEl.textContent = "0.3.261123.0904";
+        if (versionEl) versionEl.textContent = "0.3.261123.0930";
       }
       this.elements.toggle.addEventListener("click", () => actions.onToggleRecording());
       this.elements.updateReload.addEventListener("click", () => {
@@ -8554,19 +8562,14 @@
       this.elements.restHp.addEventListener("change", () => {
         this.actions.onRestGuardChange(this.elements.restGuard.checked, Number(this.elements.restHp.value) || 60);
       });
-      this.bindWindow("humanize", this.elements.humanizeBtn, this.elements.humanizeClose);
       this.bindHumanizeFields();
-      this.bindWindow("rotation", this.elements.rotationButton, this.elements.rotationClose);
-      this.bindWindow("delays", this.elements.delaysButton, this.elements.delaysClose);
-      this.bindWindow("rules", this.elements.rulesButton, this.elements.rulesClose);
-      this.bindWindow("map", this.elements.mapBtn, this.elements.mapClose);
+      this.bindTabs();
       this.elements.mapSvg.addEventListener("click", (event) => {
         const target = event.target.closest("[data-node]");
         const name = target?.getAttribute("data-node");
         if (name !== null && name !== void 0) this.actions.onMapTravel(name);
       });
       this.elements.mapCancel.addEventListener("click", () => actions.onMapTravelCancel());
-      this.elements.backdrop.addEventListener("click", () => this.closeWindow());
       document.addEventListener("keydown", (event) => {
         if (event.key === "Escape" && this.openWindowName !== null) this.closeWindow();
       });
@@ -8578,35 +8581,56 @@
         void this.handleClear(actions);
       });
     }
-    /** Кнопка панели открывает своё окно (единственное) или закрывает уже открытое. */
-    bindWindow(name, button, close) {
-      button.addEventListener("click", () => {
-        this.openWindowName = this.openWindowName === name ? null : name;
-        this.syncWindows();
-      });
-      close.addEventListener("click", () => this.closeWindow());
+    /**
+     * Вкладки панели: окна («Ротация»/«Правила»/«Задержки»/«Безопасность»/
+     * «Карта») — виды внутри панели, а не модалки по центру экрана (модалки
+     * открывались за пределами экрана, лог 23.11). Клик по активной вкладке
+     * и «Главная» возвращают главный вид; Esc и «✕» — то же самое.
+     */
+    bindTabs() {
+      const bind = (button, name) => {
+        button.addEventListener("click", () => {
+          this.openWindowName = name === null || this.openWindowName === name ? null : name;
+          this.syncViews();
+        });
+      };
+      bind(this.elements.mainTab, null);
+      for (const [name, button] of this.elements.tabButtons) bind(button, name);
+      for (const close of [
+        this.elements.rotationClose,
+        this.elements.delaysClose,
+        this.elements.rulesClose,
+        this.elements.mapClose,
+        this.elements.humanizeClose
+      ]) {
+        close.addEventListener("click", () => this.closeWindow());
+      }
     }
     closeWindow() {
       this.openWindowName = null;
-      this.syncWindows();
+      this.syncViews();
     }
-    syncWindows() {
+    syncViews() {
       const open = this.openWindowName;
-      this.elements.backdrop.classList.toggle("open", open !== null);
-      this.elements.rotationWindow.classList.toggle("open", open === "rotation");
-      this.elements.delaysWindow.classList.toggle("open", open === "delays");
-      this.elements.rulesWindow.classList.toggle("open", open === "rules");
-      this.elements.mapWindow.classList.toggle("open", open === "map");
-      this.elements.mapBtn.classList.toggle("window-open", open === "map");
+      this.elements.root.classList.toggle("v-open", open !== null);
+      this.elements.root.classList.toggle("v-map", open === "map");
+      this.elements.viewMain.classList.toggle("active", open === null);
+      this.elements.rotationWindow.classList.toggle("active", open === "rotation");
+      this.elements.delaysWindow.classList.toggle("active", open === "delays");
+      this.elements.rulesWindow.classList.toggle("active", open === "rules");
+      this.elements.mapWindow.classList.toggle("active", open === "map");
+      this.elements.humanizeWin.classList.toggle("active", open === "humanize");
+      this.elements.mainTab.classList.toggle("active", open === null);
+      for (const [name, button] of this.elements.tabButtons) {
+        button.classList.toggle("active", open === name);
+      }
+      this.elements.panelBody.scrollTop = 0;
       if (open === "map" && this.lastState !== null) this.renderMap(this.lastState);
       if (open === "rules" && this.lastState !== null) {
         this.lastRulesJson = "";
         this.renderRules(this.lastState);
       }
-      this.elements.delaysButton.classList.toggle("window-open", open === "delays");
-      this.elements.humanizeBtn.classList.toggle("window-open", open === "humanize");
       if (open === "humanize" && this.lastState !== null) this.renderHumanize(this.lastState);
-      this.elements.rulesButton.classList.toggle("window-open", open === "rules");
     }
     update(state) {
       this.lastState = state;
@@ -9647,7 +9671,7 @@
       }
     };
     try {
-      const version = true ? "0.3.261123.0904" : "?";
+      const version = true ? "0.3.261123.0930" : "?";
       push({ t: Date.now(), k: "init", msg: `recorder ${version} @ ${location.host}` });
       window.addEventListener("error", (event) => {
         recordError("error", `${event.message} @${event.filename}:${event.lineno}`);
@@ -9700,7 +9724,7 @@
     const start = async () => {
       try {
         if (typeof console !== "undefined" && console.info) {
-          console.info(`[Stalker Assistant] v${"0.3.261123.0904"} started`);
+          console.info(`[Stalker Assistant] v${"0.3.261123.0930"} started`);
         }
         runtime.panel = new Panel({
           onToggleRecording: () => {
