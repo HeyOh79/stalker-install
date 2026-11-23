@@ -1,7 +1,7 @@
 /* ==UserScript==
 // @name         Stalker Assistant
 // @namespace    local.stalker-assistant
-// @version      0.3.261123.1035
+// @version      0.3.261123.1050
 // @description  Сбор событий, клавиатур и решений в игре «Сталкер» (VK)
 // @match        https://vk.com/*
 // @match        https://vk.ru/*
@@ -1165,10 +1165,10 @@
   }
   function buttonByText(keyboard, needle) {
     const target = needle.toLowerCase();
-    return flattenButtons(keyboard).find((button) => {
-      const text = comparableButtonText2(button.text);
-      return text === target || text.includes(target);
-    }) ?? null;
+    const buttons = flattenButtons(keyboard);
+    const exact = buttons.find((button) => comparableButtonText2(button.text) === target);
+    if (exact) return exact;
+    return buttons.find((button) => comparableButtonText2(button.text).includes(target)) ?? null;
   }
   function bestShotDamage(state) {
     if (!state) return null;
@@ -1234,6 +1234,14 @@
   function skillOnCooldown(state, button) {
     const key = usedButtonKey(button);
     return key !== "" && (state?.skillCooldown[key] ?? 0) > 0;
+  }
+  function pickHumanEligible(eligible, mistakeRatePct, rand = Math.random) {
+    const first = eligible[0] ?? null;
+    if (first === null || mistakeRatePct <= 0 || eligible.length < 2) return first;
+    if (first.rule.oncePerBattle || first.rule.hpBelow !== null) return first;
+    if (rand() * 100 >= mistakeRatePct) return first;
+    const alt = eligible.slice(1).find((entry) => !entry.rule.oncePerBattle && entry.rule.hpBelow === null && !entry.rule.disabled);
+    return alt ?? first;
   }
   function eligibleRotationRules(keyboard, state, rules) {
     const normalized = migrateBattleRotation(rules);
@@ -1694,17 +1702,19 @@
     }
     return null;
   }
-  function battleAdvice(keyboard, ts, rotation, battle, autoExpand) {
+  function battleAdvice(keyboard, ts, rotation, battle, autoExpand, mistakeRatePct = 0) {
     const eligible = eligibleRotationRules(keyboard, battle, rotation);
     const first = eligible[0] ?? null;
-    if (first !== null && first.button !== null) {
-      const conditions = describeRotationRule(first.rule);
-      const killTarget = first.rule.onKill && battle?.target ? ` \u2014 \u0434\u043E\u0431\u044C\u0451\u0442 \xAB${battle.target.name}\xBB (${battle.target.hp} HP)` : "";
+    const picked = pickHumanEligible(eligible, mistakeRatePct);
+    if (picked !== null && picked.button !== null) {
+      const conditions = describeRotationRule(picked.rule);
+      const killTarget = picked.rule.onKill && battle?.target ? ` \u2014 \u0434\u043E\u0431\u044C\u0451\u0442 \xAB${battle.target.name}\xBB (${battle.target.hp} HP)` : "";
+      const missed = picked !== first ? " (\u043F\u0440\u0430\u0432\u0438\u043B\u043E \u043F\u043E\u043D\u0438\u0436\u0435 \u2014 \u0447\u0435\u043B\u043E\u0432\u0435\u0447\u0435\u0441\u043A\u0430\u044F \u043E\u0448\u0438\u0431\u043A\u0430)" : "";
       return {
         kind: "battle",
-        title: `\u041D\u0430\u0436\u043C\u0438 \xAB${first.button.text.trim()}\xBB`,
-        note: `\u0420\u043E\u0442\u0430\u0446\u0438\u044F: \u0448\u0430\u0433 ${first.step} \u0438\u0437 ${first.total}${conditions ? ` (${conditions})` : ""}${killTarget}.`,
-        button: first.button,
+        title: `\u041D\u0430\u0436\u043C\u0438 \xAB${picked.button.text.trim()}\xBB`,
+        note: `\u0420\u043E\u0442\u0430\u0446\u0438\u044F: \u0448\u0430\u0433 ${picked.step} \u0438\u0437 ${picked.total}${conditions ? ` (${conditions})` : ""}${killTarget}.${missed}`,
+        button: picked.button,
         ts
       };
     }
@@ -1965,7 +1975,7 @@
           ts
         };
       }
-      return battleAdvice(keyboard, ts, options?.battleRotation ?? [], options?.battle ?? null, options?.battleAutoExpand !== false);
+      return battleAdvice(keyboard, ts, options?.battleRotation ?? [], options?.battle ?? null, options?.battleAutoExpand !== false, options?.battleMistakeRate ?? 0);
     }
     if (enabledOf(options, "heal")) {
       const health = healthPercentOf(text);
@@ -4188,6 +4198,7 @@
     nightFrom: "01:00",
     nightTo: "08:00",
     sameCommandMs: 8e3,
+    mistakeRatePct: 5,
     silenceStopMin: 5,
     panicPerMin: 10
   };
@@ -4219,6 +4230,7 @@
       nightFrom: asClock(source.nightFrom) || (source.nightFrom === "" ? "" : d.nightFrom),
       nightTo: asClock(source.nightTo) || (source.nightTo === "" ? "" : d.nightTo),
       sameCommandMs: asNum(source.sameCommandMs, 4e3, 6e4, d.sameCommandMs),
+      mistakeRatePct: asNum(source.mistakeRatePct, 0, 25, d.mistakeRatePct),
       silenceStopMin: asNum(source.silenceStopMin, 2, 60, d.silenceStopMin),
       panicPerMin: asNum(source.panicPerMin, 5, 100, d.panicPerMin)
     };
@@ -4242,6 +4254,14 @@
   function humanDelayMs(baseMs, settings, rand = Math.random) {
     if (!settings.enabled) return Math.max(0, baseMs);
     const floor = Math.max(baseMs, settings.minReactionMs);
+    const roll = rand();
+    if (roll < 0.08) {
+      const fastCeil = Math.max(1200, Math.round(settings.minReactionMs * 0.7));
+      return Math.round(1200 + rand() * Math.max(0, fastCeil - 1200));
+    }
+    if (roll >= 0.92) {
+      return floor + 4e3 + Math.floor(rand() * 6e3);
+    }
     return floor + Math.floor(rand() * settings.jitterMs);
   }
   function breakPauseMs(now, activeSince, settings) {
@@ -6556,7 +6576,7 @@
       } catch {
         return;
       }
-      const local = "0.3.261123.1035";
+      const local = "0.3.261123.1050";
       if (remote === null || !isNewerVersion(remote, local)) return;
       const firstNotice = this.state.updateAvailable?.remote !== remote;
       this.state.updateAvailable = { remote, local };
@@ -7221,6 +7241,7 @@
       const options = {
         battleRotation: this.state.battleRotation,
         battleAutoExpand: this.state.battleAutoExpand,
+        battleMistakeRate: this.humanize.enabled ? this.humanize.mistakeRatePct : 0,
         battle: this.battleStates.get(peerId) ?? null,
         recovery,
         events: this.state.eventRules,
@@ -8503,6 +8524,7 @@
         <div class="row"><span>\u041F\u0430\u0443\u0437\u0430 \u043F\u0435\u0440\u0435\u0434 \u043A\u043E\u043C\u0430\u043D\u0434\u043E\u0439 (\u043C\u0441)</span><input class="human-minreact" type="number" min="1000" max="30000" step="500"></div>
         <div class="row"><span>\u0420\u0430\u0437\u0431\u0440\u043E\u0441 \u043F\u0430\u0443\u0437\u044B (\u043C\u0441)</span><input class="human-jitter" type="number" min="0" max="30000" step="500"></div>
         <div class="row"><span>\u041F\u043E\u0432\u0442\u043E\u0440 \u0442\u043E\u0439 \u0436\u0435 \u043A\u043D\u043E\u043F\u043A\u0438 (\u043C\u0441)</span><input class="human-samecmd" type="number" min="4000" max="60000" step="1000"></div>
+        <div class="row"><span>\xAB\u041E\u0448\u0438\u0431\u043A\u0438\xBB \u0438\u0433\u0440\u043E\u043A\u0430 (%)</span><input class="human-mistake" type="number" min="0" max="25" step="1" title="\u0418\u0437\u0440\u0435\u0434\u043A\u0430 \u0431\u0440\u0430\u0442\u044C \u0431\u0435\u0437\u043E\u043F\u0430\u0441\u043D\u043E\u0435 \u043F\u0440\u0430\u0432\u0438\u043B\u043E \u0440\u043E\u0442\u0430\u0446\u0438\u0438 \u043F\u043E\u043D\u0438\u0436\u0435 \u0432\u043C\u0435\u0441\u0442\u043E \u043F\u0435\u0440\u0432\u043E\u0433\u043E: \u0431\u0435\u0437\u043E\u0448\u0438\u0431\u043E\u0447\u043D\u0430\u044F \u043F\u0440\u0438\u043E\u0440\u0438\u0442\u0435\u0442\u043D\u043E\u0441\u0442\u044C \u043A\u0430\u0436\u0434\u043E\u0433\u043E \u0445\u043E\u0434\u0430 \u0447\u0438\u0442\u0430\u0435\u0442\u0441\u044F \u043A\u0430\u043A \u0441\u043A\u0440\u0438\u043F\u0442. 0 \u2014 \u0432\u0441\u0435\u0433\u0434\u0430 \u043F\u0435\u0440\u0432\u043E\u0435 \u043F\u0440\u0430\u0432\u0438\u043B\u043E."></div>
         <div class="section-title">\u0420\u0438\u0442\u043C \u0441\u0435\u0441\u0441\u0438\u0438</div>
         <div class="row"><span>\u0418\u0433\u0440\u0430 \u0431\u043B\u043E\u043A\u043E\u043C (\u043C\u0438\u043D)</span><input class="human-play" type="number" min="10" max="240" step="5"></div>
         <div class="row"><span>\u041F\u0435\u0440\u0435\u0440\u044B\u0432 (\u043C\u0438\u043D)</span><input class="human-break" type="number" min="2" max="60" step="1"></div>
@@ -8664,6 +8686,7 @@
         humanMinReact: get(".human-minreact"),
         humanJitter: get(".human-jitter"),
         humanSameCmd: get(".human-samecmd"),
+        humanMistake: get(".human-mistake"),
         humanPlay: get(".human-play"),
         humanBreak: get(".human-break"),
         humanNightFrom: get(".human-nightfrom"),
@@ -8694,7 +8717,7 @@
       };
       if (true) {
         const versionEl = shadow.querySelector(".version");
-        if (versionEl) versionEl.textContent = "0.3.261123.1035";
+        if (versionEl) versionEl.textContent = "0.3.261123.1050";
       }
       this.elements.toggle.addEventListener("click", () => actions.onToggleRecording());
       this.elements.updateReload.addEventListener("click", () => {
@@ -8955,6 +8978,7 @@
       num(this.elements.humanMinReact, "minReactionMs");
       num(this.elements.humanJitter, "jitterMs");
       num(this.elements.humanSameCmd, "sameCommandMs");
+      num(this.elements.humanMistake, "mistakeRatePct");
       num(this.elements.humanPlay, "playBlockMin");
       num(this.elements.humanBreak, "breakMin");
       num(this.elements.humanSilence, "silenceStopMin");
@@ -8983,6 +9007,7 @@
       set(this.elements.humanMinReact, h.minReactionMs);
       set(this.elements.humanJitter, h.jitterMs);
       set(this.elements.humanSameCmd, h.sameCommandMs);
+      set(this.elements.humanMistake, h.mistakeRatePct);
       set(this.elements.humanPlay, h.playBlockMin);
       set(this.elements.humanBreak, h.breakMin);
       set(this.elements.humanNightFrom, h.nightFrom);
@@ -9867,7 +9892,7 @@
       }
     };
     try {
-      const version = true ? "0.3.261123.1035" : "?";
+      const version = true ? "0.3.261123.1050" : "?";
       push({ t: Date.now(), k: "init", msg: `recorder ${version} @ ${location.host}` });
       window.addEventListener("error", (event) => {
         recordError("error", `${event.message} @${event.filename}:${event.lineno}`);
@@ -9920,7 +9945,7 @@
     const start = async () => {
       try {
         if (typeof console !== "undefined" && console.info) {
-          console.info(`[Stalker Assistant] v${"0.3.261123.1035"} started`);
+          console.info(`[Stalker Assistant] v${"0.3.261123.1050"} started`);
         }
         runtime.panel = new Panel({
           onToggleRecording: () => {
