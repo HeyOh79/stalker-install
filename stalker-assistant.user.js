@@ -1,7 +1,7 @@
 /* ==UserScript==
 // @name         Stalker Assistant
 // @namespace    local.stalker-assistant
-// @version      0.3.261116.1053
+// @version      0.3.261123.0904
 // @description  Сбор событий, клавиатур и решений в игре «Сталкер» (VK)
 // @match        https://vk.com/*
 // @match        https://vk.ru/*
@@ -4218,6 +4218,20 @@
     if (inCycle < playMs) return 0;
     return cycleMs - inCycle;
   }
+  function hardGateWaitMs(input) {
+    const { now, night, activeSince, sentAt, settings } = input;
+    if (!settings.enabled) return { waitMs: 0, note: "" };
+    const notes = [];
+    if (night) notes.push("\u043D\u043E\u0447\u044C");
+    const pauseMs = activeSince > 0 ? breakPauseMs(now, activeSince, settings) : 0;
+    if (pauseMs > 0) notes.push(`\u043F\u0435\u0440\u0435\u0440\u044B\u0432 ${Math.ceil(pauseMs / 6e4)} \u043C\u0438\u043D`);
+    const gate = budgetGate(now, sentAt, settings);
+    let waitMs = 0;
+    if (!gate.allowed) waitMs = Math.max(waitMs, gate.waitMs);
+    if (notes.length > 0) waitMs = Math.max(waitMs, 6e4);
+    const note = notes.length > 0 ? notes.join(", ") : !gate.allowed ? "\u043B\u0438\u043C\u0438\u0442 \u043A\u043E\u043C\u0430\u043D\u0434/\u0447\u0430\u0441" : "";
+    return { waitMs, note };
+  }
   function budgetGate(now, sentAt, settings) {
     if (!settings.enabled) return { allowed: true, waitMs: 0 };
     const hourAgo = now - 60 * 60 * 1e3;
@@ -5278,36 +5292,34 @@
       this.panel?.update(this.state);
     }
     /**
-     * Единый гейт плана: ночь/перерыв/бюджет откладывают команду, реакция
-     * получает пол+джиттер. Возвращает момент, когда команду можно исполнить
-     * (Date.now()+wait) — планировщики передают его в keepEarliestPlanAt.
+     * Жёсткий гейт сработавшего плана: ночь/перерыв/бюджет могли открыться
+     * ПОСЛЕ создания плана — тогда команда откладывается до их конца.
+     * Пол реакции + джиттер НЕ применяется: они уже вшиты в план при создании
+     * (`humanDelayMs` у планировщиков). Повторное применение здесь откладывало
+     * план бесконечно — каждое срабатывание таймера добавляло новые 3,5–8 с,
+     * клик не случался никогда (лог 23.11: три плана, ноль кликов, игрок жал
+     * вручную). Возвращает момент, когда команду можно исполнить.
      */
-    humanizeAt(desiredAt, button) {
+    humanizeGateAt(desiredAt, button) {
       if (!this.humanize.enabled) return desiredAt;
       const now = Date.now();
-      const notes = [];
-      if (isNight(/* @__PURE__ */ new Date(), this.humanize.nightFrom, this.humanize.nightTo)) {
-        notes.push("\u043D\u043E\u0447\u044C");
-      }
-      if (this.humanizeActiveSince > 0) {
-        const pauseMs = breakPauseMs(now, this.humanizeActiveSince, this.humanize);
-        if (pauseMs > 0) notes.push(`\u043F\u0435\u0440\u0435\u0440\u044B\u0432 ${Math.ceil(pauseMs / 6e4)} \u043C\u0438\u043D`);
-      }
-      const gate = budgetGate(now, this.humanizeSentAt, this.humanize);
-      let deferred = 0;
-      if (!gate.allowed) deferred = Math.max(deferred, gate.waitMs);
-      if (notes.length > 0) deferred = Math.max(deferred, 6e4);
-      const note = notes.length > 0 ? notes.join(", ") : !gate.allowed ? "\u043B\u0438\u043C\u0438\u0442 \u043A\u043E\u043C\u0430\u043D\u0434/\u0447\u0430\u0441" : "";
+      const { waitMs, note } = hardGateWaitMs({
+        now,
+        night: isNight(/* @__PURE__ */ new Date(), this.humanize.nightFrom, this.humanize.nightTo),
+        activeSince: this.humanizeActiveSince,
+        sentAt: this.humanizeSentAt,
+        settings: this.humanize
+      });
       if (note !== this.state.humanizePauseNote) {
         this.state.humanizePauseNote = note;
         this.panel?.update(this.state);
       }
-      if (deferred > 0) {
-        this.logAuto({ event: "humanize-defer", reason: note || "budget", waitMs: Math.round(deferred), button: button.slice(0, 24) });
-        return Math.max(desiredAt, now + deferred);
+      if (waitMs > 0) {
+        this.logAuto({ event: "humanize-defer", reason: note || "budget", waitMs: Math.round(waitMs), button: button.slice(0, 24) });
+        return Math.max(desiredAt, now + waitMs);
       }
       if (this.state.humanizePauseNote !== "") this.state.humanizePauseNote = "";
-      return Math.max(desiredAt, now + humanDelayMs(0, this.humanize));
+      return desiredAt;
     }
     /** Фиксация отправки в бюджет часа (после успешного клика/команды). */
     humanizeTrackCommand() {
@@ -6454,7 +6466,7 @@
       } catch {
         return;
       }
-      const local = "0.3.261116.1053";
+      const local = "0.3.261123.0904";
       if (remote === null || !isNewerVersion(remote, local)) return;
       const firstNotice = this.state.updateAvailable?.remote !== remote;
       this.state.updateAvailable = { remote, local };
@@ -7508,7 +7520,7 @@
     async runAutoClick() {
       const planned = this.plannedAction;
       if (planned !== null && this.humanize.enabled) {
-        const gatedAt = this.humanizeAt(planned.at, planned.button);
+        const gatedAt = this.humanizeGateAt(planned.at, planned.button);
         if (gatedAt > planned.at && gatedAt - Date.now() > 1500) {
           const waitMs = gatedAt - Date.now();
           const replan = { ...planned, at: gatedAt };
@@ -8493,7 +8505,7 @@
       };
       if (true) {
         const versionEl = shadow.querySelector(".version");
-        if (versionEl) versionEl.textContent = "0.3.261116.1053";
+        if (versionEl) versionEl.textContent = "0.3.261123.0904";
       }
       this.elements.toggle.addEventListener("click", () => actions.onToggleRecording());
       this.elements.updateReload.addEventListener("click", () => {
@@ -9635,7 +9647,7 @@
       }
     };
     try {
-      const version = true ? "0.3.261116.1053" : "?";
+      const version = true ? "0.3.261123.0904" : "?";
       push({ t: Date.now(), k: "init", msg: `recorder ${version} @ ${location.host}` });
       window.addEventListener("error", (event) => {
         recordError("error", `${event.message} @${event.filename}:${event.lineno}`);
@@ -9688,7 +9700,7 @@
     const start = async () => {
       try {
         if (typeof console !== "undefined" && console.info) {
-          console.info(`[Stalker Assistant] v${"0.3.261116.1053"} started`);
+          console.info(`[Stalker Assistant] v${"0.3.261123.0904"} started`);
         }
         runtime.panel = new Panel({
           onToggleRecording: () => {
