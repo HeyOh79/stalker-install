@@ -1,7 +1,7 @@
 /* ==UserScript==
 // @name         Stalker Assistant
 // @namespace    local.stalker-assistant
-// @version      0.3.261123.0930
+// @version      0.3.261123.0954
 // @description  Сбор событий, клавиатур и решений в игре «Сталкер» (VK)
 // @match        https://vk.com/*
 // @match        https://vk.ru/*
@@ -1220,6 +1220,9 @@
   function rotationButtonsForState(rules, state) {
     return migrateBattleRotation(rules).filter((rule) => rotationRuleMatches(rule, state)).map((rule) => rule.button);
   }
+  function rotationWantsSubmenu(rules) {
+    return migrateBattleRotation(rules).some((rule) => KNOWN_MENU_BUTTONS.has(usedButtonKey(rule.button)));
+  }
 
   // src/core/advice.ts
   var ENTRY_SCREEN_RE = /Перед глазами аномалия/u;
@@ -1686,13 +1689,14 @@
       };
     }
     const withButton = eligible.find((entry) => entry.button !== null) ?? null;
+    const menuBlocked = wanted !== null && wantsMenu && !autoExpand ? ` \u041F\u0435\u0440\u0432\u043E\u0435 \u043F\u0440\u0430\u0432\u0438\u043B\u043E \xAB${wanted.rule.button}\xBB \u0436\u0438\u0432\u0451\u0442 \u0432 \xAB\u2795 \u0414\u0435\u0439\u0441\u0442\u0432\u0438\u044F\xBB, \u0442\u0443\u043C\u0431\u043B\u0435\u0440 \u0440\u0430\u0441\u043A\u0440\u044B\u0442\u0438\u044F \u0432\u044B\u043A\u043B\u044E\u0447\u0435\u043D (\u0432\u043A\u043B\u0430\u0434\u043A\u0430 \xAB\u0420\u043E\u0442\u0430\u0446\u0438\u044F\xBB).` : "";
     if (withButton !== null && withButton.button !== null) {
       const conditions = describeRotationRule(withButton.rule);
       const killTarget = withButton.rule.onKill && battle?.target ? ` \u2014 \u0434\u043E\u0431\u044C\u0451\u0442 \xAB${battle.target.name}\xBB (${battle.target.hp} HP)` : "";
       return {
         kind: "battle",
         title: `\u041D\u0430\u0436\u043C\u0438 \xAB${withButton.button.text.trim()}\xBB`,
-        note: `\u0420\u043E\u0442\u0430\u0446\u0438\u044F: \u0448\u0430\u0433 ${withButton.step} \u0438\u0437 ${withButton.total}${conditions ? ` (${conditions})` : ""}${killTarget}.`,
+        note: `\u0420\u043E\u0442\u0430\u0446\u0438\u044F: \u0448\u0430\u0433 ${withButton.step} \u0438\u0437 ${withButton.total}${conditions ? ` (${conditions})` : ""}${killTarget}.${menuBlocked}`,
         button: withButton.button,
         ts
       };
@@ -4814,7 +4818,7 @@
             groupOnly: false,
             oncePerBattle: false,
             onKill: true,
-            notFullHp: false,
+            notFullHp: true,
             disabled: false
           }, ...this.state.battleRotation];
           try {
@@ -4830,6 +4834,16 @@
         }
       }
       this.state.battleAutoExpand = sanitizeBoolean(await getMeta("battleAutoExpand", true), true);
+      if (!this.state.battleAutoExpand && rotationWantsSubmenu(this.state.battleRotation) && !await getMeta("battleAutoExpandMigrated", false)) {
+        this.state.battleAutoExpand = true;
+        try {
+          await setMeta("battleAutoExpand", true);
+          await setMeta("battleAutoExpandMigrated", true);
+          this.logAuto({ event: "auto-expand-on", reason: "rotation-submenu-rule" });
+        } catch (error) {
+          this.noteStorageError(error, "battleAutoExpand (\u043C\u0438\u0433\u0440\u0430\u0446\u0438\u044F)");
+        }
+      }
       this.state.gardenAutoSell = sanitizeBoolean(await getMeta("gardenAutoSell", false), false);
       this.state.anomalyHpGuard = sanitizeBoolean(await getMeta("anomalyHpGuard", false), false);
       this.state.restGuard = sanitizeBoolean(await getMeta("restHpGuard", false), false);
@@ -5224,7 +5238,17 @@
       this.panel?.update(this.state);
     }
     async setBattleRotation(rotation) {
+      const hadSubmenuRule = rotationWantsSubmenu(this.state.battleRotation);
       this.state.battleRotation = migrateBattleRotation(rotation);
+      if (!this.state.battleAutoExpand && !hadSubmenuRule && rotationWantsSubmenu(this.state.battleRotation)) {
+        this.state.battleAutoExpand = true;
+        try {
+          await setMeta("battleAutoExpand", true);
+          this.logAuto({ event: "auto-expand-on", reason: "submenu-rule-added" });
+        } catch (error) {
+          this.noteStorageError(error, "battleAutoExpand (\u043F\u0440\u0430\u0432\u0438\u043B\u043E \u043F\u043E\u0434\u043C\u0435\u043D\u044E)");
+        }
+      }
       this.evaluateAdvice();
       if (this.state.mode === "auto") this.scheduleAuto();
       await setMeta("battleRotation", this.state.battleRotation);
@@ -6466,7 +6490,7 @@
       } catch {
         return;
       }
-      const local = "0.3.261123.0930";
+      const local = "0.3.261123.0954";
       if (remote === null || !isNewerVersion(remote, local)) return;
       const firstNotice = this.state.updateAvailable?.remote !== remote;
       this.state.updateAvailable = { remote, local };
@@ -8513,7 +8537,7 @@
       };
       if (true) {
         const versionEl = shadow.querySelector(".version");
-        if (versionEl) versionEl.textContent = "0.3.261123.0930";
+        if (versionEl) versionEl.textContent = "0.3.261123.0954";
       }
       this.elements.toggle.addEventListener("click", () => actions.onToggleRecording());
       this.elements.updateReload.addEventListener("click", () => {
@@ -9671,7 +9695,7 @@
       }
     };
     try {
-      const version = true ? "0.3.261123.0930" : "?";
+      const version = true ? "0.3.261123.0954" : "?";
       push({ t: Date.now(), k: "init", msg: `recorder ${version} @ ${location.host}` });
       window.addEventListener("error", (event) => {
         recordError("error", `${event.message} @${event.filename}:${event.lineno}`);
@@ -9724,7 +9748,7 @@
     const start = async () => {
       try {
         if (typeof console !== "undefined" && console.info) {
-          console.info(`[Stalker Assistant] v${"0.3.261123.0930"} started`);
+          console.info(`[Stalker Assistant] v${"0.3.261123.0954"} started`);
         }
         runtime.panel = new Panel({
           onToggleRecording: () => {
