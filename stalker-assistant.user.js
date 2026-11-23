@@ -1,7 +1,7 @@
 /* ==UserScript==
 // @name         Stalker Assistant
 // @namespace    local.stalker-assistant
-// @version      0.3.261123.1015
+// @version      0.3.261123.1035
 // @description  Сбор событий, клавиатур и решений в игре «Сталкер» (VK)
 // @match        https://vk.com/*
 // @match        https://vk.ru/*
@@ -249,6 +249,12 @@
     return true;
   }
   var AUTO_SAME_CLICK_LIMIT = 3;
+  var NO_RESPONSE_WINDOW_MS = 2e4;
+  var NO_RESPONSE_CLICK_LIMIT = 3;
+  var NO_RESPONSE_PAUSE_MS = 6e4;
+  function clickAnswered(clickAt, lastFreshIncomingAt, lastKeyboardChangeAt) {
+    return lastFreshIncomingAt > clickAt || lastKeyboardChangeAt > clickAt;
+  }
   var AUTO_REPEAT_PAUSE_MS = 3e4;
   function nextClickStreak(prev, button) {
     if (prev !== null && prev.button === button) return { button, count: prev.count + 1 };
@@ -4693,6 +4699,14 @@
     lastIncomingItemAt = Date.now();
     lastComposerChangeAt = Date.now();
     /**
+     * Пер-кликовый контроль отклика: время последнего НОВОГО входящего
+     * (мимо дедупа — повторные доставки хвоста истории не в счёт) и клик,
+     * который ждёт ответа. Серия безответных кликов любых кнопок — пауза.
+     */
+    lastFreshIncomingAt = 0;
+    lastClickAwaitAt = 0;
+    noResponseStreak = 0;
+    /**
      * Из аномалии пора выходить (страж HP): флаг по чатам, живёт до «Вы вышли
      * из аномалии» / входа в новое поле. После подбора артефакта флаг больше
      * НЕ ставится — артефактов в поле несколько, охота продолжается, пока
@@ -6112,6 +6126,7 @@
         if (this.updateCheckTick === 0) void this.checkRemoteUpdate();
         this.state.otherTabAutoUntil = this.lastOtherTabAutoAt > 0 ? this.lastOtherTabAutoAt + OTHER_TAB_AUTO_WINDOW_MS : 0;
         this.refreshHumanizeCounters();
+        this.checkClickResponse();
         this.panel?.update(this.state);
       };
       update();
@@ -6541,7 +6556,7 @@
       } catch {
         return;
       }
-      const local = "0.3.261123.1015";
+      const local = "0.3.261123.1035";
       if (remote === null || !isNewerVersion(remote, local)) return;
       const firstNotice = this.state.updateAvailable?.remote !== remote;
       this.state.updateAvailable = { remote, local };
@@ -6775,6 +6790,7 @@
         if (!this.seenIncomingKeys.has(message.key)) {
           this.seenIncomingKeys.add(message.key);
           this.capSeenIncomingKeys();
+          this.lastFreshIncomingAt = Date.now();
           return true;
         }
         const keyboard = message.keyboard;
@@ -7676,6 +7692,7 @@
                 this.humanizeTrackCommand();
                 this.state.autoClicks += 1;
                 this.logAuto({ event: "spinner-click", button: planned.button, retries: this.retryCount });
+                this.noteAutoClickSent();
                 return;
               }
             } catch (error) {
@@ -7693,6 +7710,7 @@
                   this.autoClickAtByButton.set("\u{1F3AF} \u041A \u0431\u043E\u044E", Date.now());
                   this.state.autoClicks += 1;
                   this.logAuto({ event: "submenu-exit", button: planned.button });
+                  this.noteAutoClickSent();
                   this.cancelAutoPlan();
                   this.evaluateAdvice();
                   return;
@@ -7848,6 +7866,46 @@
         console.info("[Stalker Assistant] auto click:", planned.button, `(${planned.reason})`);
       }
       this.logAuto({ event: "click", button: planned.button, reason: planned.reason });
+      this.noteAutoClickSent();
+    }
+    /**
+     * Каждый отправленный авто-клик ждёт ответа игры: новое входящее сообщение
+     * или смена клавиатуры в течение NO_RESPONSE_WINDOW_MS. Серия безответных
+     * кликов ЛЮБЫХ кнопок (включая чередующиеся — их same-button repeat-pause
+     * не видит) — минутная пауза; затянувшаяся мёртвость продлевает серию
+     * dead-clicks до перезагрузки страницы.
+     */
+    noteAutoClickSent() {
+      this.lastClickAwaitAt = Date.now();
+    }
+    /** Секундная проверка: ответил ли чат на последний авто-клик. */
+    checkClickResponse() {
+      if (this.lastClickAwaitAt <= 0) return;
+      if (clickAnswered(this.lastClickAwaitAt, this.lastFreshIncomingAt, this.lastComposerChangeAt)) {
+        this.lastClickAwaitAt = 0;
+        this.noResponseStreak = 0;
+        return;
+      }
+      if (Date.now() - this.lastClickAwaitAt <= NO_RESPONSE_WINDOW_MS) return;
+      const button = this.lastAutoClickButton ?? "?";
+      this.lastClickAwaitAt = 0;
+      this.noResponseStreak += 1;
+      this.logAuto({ event: "no-response", button, streak: this.noResponseStreak });
+      if (this.noResponseStreak >= NO_RESPONSE_CLICK_LIMIT) {
+        this.state.autoRepeatPauseUntil = Date.now() + NO_RESPONSE_PAUSE_MS;
+        this.deadClicksSince ??= Date.now();
+        this.lastRepeatPauseAt = Date.now();
+        this.noResponseStreak = 0;
+        this.cancelAutoPlan();
+        this.logAuto({
+          event: "repeat-pause",
+          button,
+          clicks: NO_RESPONSE_CLICK_LIMIT,
+          cause: "no-response",
+          pauseMs: NO_RESPONSE_PAUSE_MS
+        });
+        this.panel?.update(this.state);
+      }
     }
     /** Решение цикла self-poll: пора ли тянуть хвост истории (см. SELF_POLL_*). */
     maybeSelfPoll() {
@@ -8636,7 +8694,7 @@
       };
       if (true) {
         const versionEl = shadow.querySelector(".version");
-        if (versionEl) versionEl.textContent = "0.3.261123.1015";
+        if (versionEl) versionEl.textContent = "0.3.261123.1035";
       }
       this.elements.toggle.addEventListener("click", () => actions.onToggleRecording());
       this.elements.updateReload.addEventListener("click", () => {
@@ -9809,7 +9867,7 @@
       }
     };
     try {
-      const version = true ? "0.3.261123.1015" : "?";
+      const version = true ? "0.3.261123.1035" : "?";
       push({ t: Date.now(), k: "init", msg: `recorder ${version} @ ${location.host}` });
       window.addEventListener("error", (event) => {
         recordError("error", `${event.message} @${event.filename}:${event.lineno}`);
@@ -9862,7 +9920,7 @@
     const start = async () => {
       try {
         if (typeof console !== "undefined" && console.info) {
-          console.info(`[Stalker Assistant] v${"0.3.261123.1015"} started`);
+          console.info(`[Stalker Assistant] v${"0.3.261123.1035"} started`);
         }
         runtime.panel = new Panel({
           onToggleRecording: () => {
