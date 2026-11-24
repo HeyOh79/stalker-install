@@ -1,7 +1,7 @@
 /* ==UserScript==
 // @name         Stalker Assistant
 // @namespace    local.stalker-assistant
-// @version      0.3.261124.1100
+// @version      0.3.261124.1210
 // @description  Сбор событий, клавиатур и решений в игре «Сталкер» (VK)
 // @match        https://vk.com/*
 // @match        https://vk.ru/*
@@ -5273,7 +5273,7 @@
      * один раз открыв чат игры, пользователь больше нигде ассистента не увидит.
      */
     pinGamePeer(peerId) {
-      if (this.isGamePeer(peerId)) return;
+      if (this.state.gamePeerIds.includes(peerId)) return;
       this.state.gamePeerIds = [...this.state.gamePeerIds, peerId];
       void setMeta("gamePeerIds", this.state.gamePeerIds).catch(() => {
       });
@@ -6606,7 +6606,7 @@
       } catch {
         return;
       }
-      const local = "0.3.261124.1100";
+      const local = "0.3.261124.1210";
       if (remote === null || !isNewerVersion(remote, local)) return;
       const firstNotice = this.state.updateAvailable?.remote !== remote;
       this.state.updateAvailable = { remote, local };
@@ -8820,7 +8820,7 @@
       };
       if (true) {
         const versionEl = shadow.querySelector(".version");
-        if (versionEl) versionEl.textContent = "0.3.261124.1100";
+        if (versionEl) versionEl.textContent = "0.3.261124.1210";
       }
       this.elements.toggle.addEventListener("click", () => actions.onToggleRecording());
       this.elements.updateReload.addEventListener("click", () => {
@@ -8945,14 +8945,11 @@
     }
     update(state) {
       this.lastState = state;
-      const visible = state.isGameChat || state.gamePeerIds.length === 0 && state.currentPeerId !== null;
+      const visible = state.isGameChat;
       this.elements.root.classList.toggle("hidden", !visible);
       if (this.openWindowName === "map") this.renderMap(state);
       if (this.openWindowName === "humanize") this.renderHumanize(state);
-      this.elements.gameNote.classList.toggle("on", visible && !state.isGameChat);
-      if (visible && !state.isGameChat) {
-        this.elements.gameNote.textContent = "\u0427\u0430\u0442 \u0438\u0433\u0440\u044B \u0435\u0449\u0451 \u043D\u0435 \u043E\u043F\u043E\u0437\u043D\u0430\u043D. \u041E\u0442\u043A\u0440\u043E\u0439 \u0434\u0438\u0430\u043B\u043E\u0433 \xAB\u0421\u0442\u0430\u043B\u043A\u0435\u0440 \u0421\u0435\u0440\u0434\u0446\u0435 \u0427\u0435\u0440\u043D\u043E\u0431\u044B\u043B\u044F\xBB \u2014 \u0430\u0441\u0441\u0438\u0441\u0442\u0435\u043D\u0442 \u0432\u043A\u043B\u044E\u0447\u0438\u0442\u0441\u044F \u0441\u0430\u043C.";
-      }
+      this.elements.gameNote.classList.remove("on");
       const otherTabActive = state.otherTabAutoUntil > Date.now();
       this.elements.tabNote.classList.toggle("on", otherTabActive);
       if (otherTabActive) {
@@ -9995,7 +9992,7 @@
       }
     };
     try {
-      const version = true ? "0.3.261124.1100" : "?";
+      const version = true ? "0.3.261124.1210" : "?";
       push({ t: Date.now(), k: "init", msg: `recorder ${version} @ ${location.host}` });
       window.addEventListener("error", (event) => {
         recordError("error", `${event.message} @${event.filename}:${event.lineno}`);
@@ -10048,7 +10045,7 @@
     const start = async () => {
       try {
         if (typeof console !== "undefined" && console.info) {
-          console.info(`[Stalker Assistant] v${"0.3.261124.1100"} started`);
+          console.info(`[Stalker Assistant] v${"0.3.261124.1210"} started`);
         }
         runtime.panel = new Panel({
           onToggleRecording: () => {
