@@ -1,7 +1,7 @@
 /* ==UserScript==
 // @name         Stalker Assistant
 // @namespace    local.stalker-assistant
-// @version      0.3.261124.0202
+// @version      0.3.261124.1100
 // @description  Сбор событий, клавиатур и решений в игре «Сталкер» (VK)
 // @match        https://vk.com/*
 // @match        https://vk.ru/*
@@ -2704,6 +2704,18 @@
     }
     return dbPromise;
   }
+  function resetDbConnection() {
+    const pending = dbPromise;
+    dbPromise = null;
+    if (pending === null) return;
+    pending.then((db) => {
+      try {
+        db.close();
+      } catch {
+      }
+    }).catch(() => {
+    });
+  }
   function dbRequest(storeName, mode, action) {
     return getDb().then((db) => new Promise((resolve, reject) => {
       const transaction = db.transaction(storeName, mode);
@@ -4854,6 +4866,8 @@
       this.currentUserId = currentUserId();
       this.state.recording = sanitizeBoolean(await getMeta("recording", true), true);
       this.state.mode = sanitizeMode(await getMeta("mode", "observe"));
+      void setMeta("tzOffsetMin", -(/* @__PURE__ */ new Date()).getTimezoneOffset()).catch(() => {
+      });
       this.state.battleRotation = migrateBattleRotation(await getMeta("battleRotation", []));
       if (!await getMeta("battleRotationSeeded", false)) {
         const has = (needle) => this.state.battleRotation.some((item) => item.button.toLowerCase() === needle);
@@ -6592,7 +6606,7 @@
       } catch {
         return;
       }
-      const local = "0.3.261124.0202";
+      const local = "0.3.261124.1100";
       if (remote === null || !isNewerVersion(remote, local)) return;
       const firstNotice = this.state.updateAvailable?.remote !== remote;
       this.state.updateAvailable = { remote, local };
@@ -7287,7 +7301,11 @@
             event: "advice-expired",
             kind: computed.kind,
             ageMs: Date.now() - computed.ts,
-            inline: keyboardMessage?.keyboard?.inline ?? false
+            inline: keyboardMessage?.keyboard?.inline ?? false,
+            // Почему клика не было: тихие гейты сами не логируются, а задание
+            // уже умерло — без этой строки причина пропуска невидима (лог
+            // 24.11: пять сорвавшихся заданий, raw мёртв, разбора нет).
+            why: this.autoSilenceReason()
           });
         }
         if (keyboardMessage?.keyboard?.inline) {
@@ -7917,6 +7935,28 @@
     noteAutoClickSent() {
       this.lastClickAwaitAt = Date.now();
     }
+    /** Короткий снимок «почему авто молчит» — для события advice-expired. */
+    autoSilenceReason() {
+      if (this.state.mode !== "auto") return "mode:" + this.state.mode;
+      if (this.state.humanizeEmergency !== "") return "emergency-stop";
+      if (Date.now() < this.manualTakeoverUntil) return "manual-takeover";
+      if (Date.now() < this.state.autoRepeatPauseUntil) return "repeat-pause";
+      if (this.captchaActive()) return "captcha";
+      if (this.state.blindFishing && Date.now() < this.fishingUntil) return "blind-fishing";
+      if (typeof document !== "undefined" && document.hidden) return "hidden-tab";
+      if (this.humanize.enabled) {
+        const { waitMs, note } = hardGateWaitMs({
+          now: Date.now(),
+          night: isNight(/* @__PURE__ */ new Date(), this.humanize.nightFrom, this.humanize.nightTo) && !this.playerPresentRecently(),
+          activeSince: this.humanizeActiveSince,
+          sentAt: this.humanizeSentAt,
+          settings: this.humanize
+        });
+        if (waitMs > 0) return "humanize:" + (note || "budget");
+      }
+      if (this.plannedAction === null) return "no-plan";
+      return "plan-pending:" + this.plannedAction.button;
+    }
     /** Секундная проверка: ответил ли чат на последний авто-клик. */
     checkClickResponse() {
       if (this.lastClickAwaitAt <= 0) return;
@@ -8111,6 +8151,41 @@
       }
       return Promise.resolve();
     }
+    /**
+     * Запись стора с гардом для raw: застрявшая очередь транзакций НЕ
+     * отклоняет промис — висит вечно, и стор молчит часами при живых соседях
+     * (лог 23-24.11: raw замолчал на 13 ч, бот играл без диагностики).
+     * По таймауту пересоздаём соединение (зависшие транзакции падают) и
+     * отдаём ошибку в обычный путь восстановления.
+     */
+    putManyGuarded(store, items) {
+      const put = putMany(store, items);
+      if (store !== "raw") return put;
+      const timeoutMs = 2e4;
+      return new Promise((resolve, reject) => {
+        let settled = false;
+        const timer = window.setTimeout(() => {
+          if (settled) return;
+          settled = true;
+          resetDbConnection();
+          reject(new Error("raw write timeout \u2014 \u0441\u043E\u0435\u0434\u0438\u043D\u0435\u043D\u0438\u0435 \u0431\u0430\u0437\u044B \u043F\u0435\u0440\u0435\u0441\u043E\u0437\u0434\u0430\u043D\u043E"));
+        }, timeoutMs);
+        put.then(
+          () => {
+            if (settled) return;
+            settled = true;
+            window.clearTimeout(timer);
+            resolve();
+          },
+          (error) => {
+            if (settled) return;
+            settled = true;
+            window.clearTimeout(timer);
+            reject(error);
+          }
+        );
+      });
+    }
     /** Сброс буфера записей в базу: одна транзакция на стор. */
     async flushWrites() {
       if (this.writeTimer !== null) {
@@ -8123,7 +8198,7 @@
       const batchCallbacks = this.pendingDropCallbacks;
       this.pendingDropCallbacks = /* @__PURE__ */ new Map();
       await Promise.all([...batch.entries()].map(
-        ([store, items]) => putMany(store, items).then(() => {
+        ([store, items]) => this.putManyGuarded(store, items).then(() => {
           if (store === "raw") this.rawFailStreak = 0;
         }).catch(async (error) => {
           if (store === "raw") {
@@ -8745,7 +8820,7 @@
       };
       if (true) {
         const versionEl = shadow.querySelector(".version");
-        if (versionEl) versionEl.textContent = "0.3.261124.0202";
+        if (versionEl) versionEl.textContent = "0.3.261124.1100";
       }
       this.elements.toggle.addEventListener("click", () => actions.onToggleRecording());
       this.elements.updateReload.addEventListener("click", () => {
@@ -9920,7 +9995,7 @@
       }
     };
     try {
-      const version = true ? "0.3.261124.0202" : "?";
+      const version = true ? "0.3.261124.1100" : "?";
       push({ t: Date.now(), k: "init", msg: `recorder ${version} @ ${location.host}` });
       window.addEventListener("error", (event) => {
         recordError("error", `${event.message} @${event.filename}:${event.lineno}`);
@@ -9973,7 +10048,7 @@
     const start = async () => {
       try {
         if (typeof console !== "undefined" && console.info) {
-          console.info(`[Stalker Assistant] v${"0.3.261124.0202"} started`);
+          console.info(`[Stalker Assistant] v${"0.3.261124.1100"} started`);
         }
         runtime.panel = new Panel({
           onToggleRecording: () => {
