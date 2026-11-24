@@ -1,7 +1,7 @@
 /* ==UserScript==
 // @name         Stalker Assistant
 // @namespace    local.stalker-assistant
-// @version      0.3.261123.1057
+// @version      0.3.261124.0202
 // @description  Сбор событий, клавиатур и решений в игре «Сталкер» (VK)
 // @match        https://vk.com/*
 // @match        https://vk.ru/*
@@ -4726,6 +4726,8 @@
     lastFreshIncomingAt = 0;
     lastClickAwaitAt = 0;
     noResponseStreak = 0;
+    /** Сырые события падают подряд (сырой стор умер — диагностика слепа). */
+    rawFailStreak = 0;
     /**
      * Из аномалии пора выходить (страж HP): флаг по чатам, живёт до «Вы вышли
      * из аномалии» / входа в новое поле. После подбора артефакта флаг больше
@@ -5385,13 +5387,19 @@
      * план бесконечно — каждое срабатывание таймера добавляло новые 3,5–8 с,
      * клик не случался никогда (лог 23.11: три плана, ноль кликов, игрок жал
      * вручную). Возвращает момент, когда команду можно исполнить.
+     *
+     * НОЧЬ — МЯГКАЯ (лог 24.11 01:47: задание рыбалки в 12 с молчало, игрок
+     * ловил руками в 01:47): ночное окно защищает от игры 24/7 БЕЗ человека,
+     * но пока игрок сам за клавиатурой (ручные действия/активность в чате
+     * недавно) — ассистент помогает и ночью, сессия не длиннее человеческой.
      */
     humanizeGateAt(desiredAt, button) {
       if (!this.humanize.enabled) return desiredAt;
       const now = Date.now();
+      const nightSilent = isNight(/* @__PURE__ */ new Date(), this.humanize.nightFrom, this.humanize.nightTo) && !this.playerPresentRecently();
       const { waitMs, note } = hardGateWaitMs({
         now,
-        night: isNight(/* @__PURE__ */ new Date(), this.humanize.nightFrom, this.humanize.nightTo),
+        night: nightSilent,
         activeSince: this.humanizeActiveSince,
         sentAt: this.humanizeSentAt,
         settings: this.humanize
@@ -5406,6 +5414,14 @@
       }
       if (this.state.humanizePauseNote !== "") this.state.humanizePauseNote = "";
       return desiredAt;
+    }
+    /**
+     * Игрок за клавиатурой? Ручное действие в игре недавно (пауза
+     * takeover жива) или любая активность в чате игры в последние минуты.
+     */
+    playerPresentRecently() {
+      if (Date.now() < this.manualTakeoverUntil) return true;
+      return Date.now() - this.lastUserActivityAt < 5 * 60 * 1e3;
     }
     /** Фиксация отправки в бюджет часа (после успешного клика/команды). */
     humanizeTrackCommand() {
@@ -6576,7 +6592,7 @@
       } catch {
         return;
       }
-      const local = "0.3.261123.1057";
+      const local = "0.3.261124.0202";
       if (remote === null || !isNewerVersion(remote, local)) return;
       const firstNotice = this.state.updateAvailable?.remote !== remote;
       this.state.updateAvailable = { remote, local };
@@ -8107,8 +8123,17 @@
       const batchCallbacks = this.pendingDropCallbacks;
       this.pendingDropCallbacks = /* @__PURE__ */ new Map();
       await Promise.all([...batch.entries()].map(
-        ([store, items]) => putMany(store, items).catch(async (error) => {
+        ([store, items]) => putMany(store, items).then(() => {
+          if (store === "raw") this.rawFailStreak = 0;
+        }).catch(async (error) => {
           if (store === "raw") {
+            this.rawFailStreak += 1;
+            if (this.rawFailStreak === 3) {
+              this.reportError(new Error("\u0421\u044B\u0440\u044B\u0435 \u0441\u043E\u0431\u044B\u0442\u0438\u044F \u043D\u0435 \u043F\u0438\u0448\u0443\u0442\u0441\u044F \u0432 \u0431\u0430\u0437\u0443 \u043D\u0435\u0441\u043A\u043E\u043B\u044C\u043A\u043E \u043F\u043E\u043F\u044B\u0442\u043E\u043A \u043F\u043E\u0434\u0440\u044F\u0434 \u2014 \u0434\u0438\u0430\u0433\u043D\u043E\u0441\u0442\u0438\u043A\u0430 \u0441\u043B\u0435\u043F\u0430. \u041F\u0435\u0440\u0435\u0437\u0430\u0433\u0440\u0443\u0437\u0438 \u0441\u0442\u0440\u0430\u043D\u0438\u0446\u0443 (F5); \u043D\u0435 \u043F\u043E\u043C\u043E\u0436\u0435\u0442 \u2014 \u0441\u043E\u043E\u0431\u0449\u0438, \u043F\u043E\u0433\u043B\u044F\u0434\u0438\u043C \u0431\u0430\u0437\u0443."), "\u0437\u0430\u043F\u0438\u0441\u044C raw");
+              if (typeof console !== "undefined" && console.warn) {
+                console.warn("[Stalker Assistant] raw store write failures:", this.rawFailStreak, error);
+              }
+            }
             if (this.rawRecoveryInFlight && Date.now() - this.rawRecoveryStartedAt < RAW_RECOVERY_WATCHDOG_MS) {
               this.noteWriteFailure(error, store);
               this.stashDiagnostics(items);
@@ -8120,6 +8145,7 @@
               await pruneStore("raw", this.rawQuotaKeep);
               await putMany("raw", items);
               this.rawQuotaKeep = RAW_KEEP_ON_QUOTA;
+              this.rawFailStreak = 0;
             } catch (retryError) {
               this.rawQuotaKeep = Math.max(1e3, Math.floor(this.rawQuotaKeep / 2));
               this.noteWriteFailure(retryError, "raw");
@@ -8719,7 +8745,7 @@
       };
       if (true) {
         const versionEl = shadow.querySelector(".version");
-        if (versionEl) versionEl.textContent = "0.3.261123.1057";
+        if (versionEl) versionEl.textContent = "0.3.261124.0202";
       }
       this.elements.toggle.addEventListener("click", () => actions.onToggleRecording());
       this.elements.updateReload.addEventListener("click", () => {
@@ -9894,7 +9920,7 @@
       }
     };
     try {
-      const version = true ? "0.3.261123.1057" : "?";
+      const version = true ? "0.3.261124.0202" : "?";
       push({ t: Date.now(), k: "init", msg: `recorder ${version} @ ${location.host}` });
       window.addEventListener("error", (event) => {
         recordError("error", `${event.message} @${event.filename}:${event.lineno}`);
@@ -9947,7 +9973,7 @@
     const start = async () => {
       try {
         if (typeof console !== "undefined" && console.info) {
-          console.info(`[Stalker Assistant] v${"0.3.261123.1057"} started`);
+          console.info(`[Stalker Assistant] v${"0.3.261124.0202"} started`);
         }
         runtime.panel = new Panel({
           onToggleRecording: () => {
