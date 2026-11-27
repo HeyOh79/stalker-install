@@ -1,7 +1,7 @@
 /* ==UserScript==
 // @name         Stalker Assistant
 // @namespace    local.stalker-assistant
-// @version      0.3.261127.1404
+// @version      0.3.261127.1417
 // @description  Сбор событий, клавиатур и решений в игре «Сталкер» (VK)
 // @match        https://vk.com/*
 // @match        https://vk.ru/*
@@ -228,6 +228,7 @@
   };
   var DELAY_KEYS = ["fishing", "battle", "anomaly", "other", "explore"];
   var AUTO_MIN_INTERVAL_MS = 1e3;
+  var FISHING_TASK_DELAY_CAP_MS = 8e3;
   var AUTO_SAME_BUTTON_COOLDOWN_MS = 4e3;
   function sameButtonCooldownDelay(reason, plannedDelayMs, lastClickAt, now, cooldownMs = AUTO_SAME_BUTTON_COOLDOWN_MS) {
     if (reason === "continue" || lastClickAt === null || lastClickAt === void 0) return plannedDelayMs;
@@ -6636,7 +6637,7 @@
       } catch {
         return;
       }
-      const local = "0.3.261127.1404";
+      const local = "0.3.261127.1417";
       if (remote === null || !isNewerVersion(remote, local)) return;
       const firstNotice = this.state.updateAvailable?.remote !== remote;
       this.state.updateAvailable = { remote, local };
@@ -7687,6 +7688,9 @@
       );
       if (this.humanize.enabled) {
         delay = Math.max(delay, humanDelayMs(delay, this.humanize));
+      }
+      if (action.reason === "advice" && this.state.advice !== null && (this.state.advice.kind === "label" || this.state.advice.kind === "color" || this.state.advice.kind === "icon")) {
+        delay = Math.min(delay, FISHING_TASK_DELAY_CAP_MS);
       }
       const kept = keepEarliestPlanAt(
         { timerActive: prevTimerActive, plan: prevPlan },
@@ -8938,7 +8942,7 @@
       };
       if (true) {
         const versionEl = shadow.querySelector(".version");
-        if (versionEl) versionEl.textContent = "0.3.261127.1404";
+        if (versionEl) versionEl.textContent = "0.3.261127.1417";
       }
       this.elements.toggle.addEventListener("click", () => actions.onToggleRecording());
       this.elements.updateReload.addEventListener("click", () => {
@@ -10110,7 +10114,7 @@
       }
     };
     try {
-      const version = true ? "0.3.261127.1404" : "?";
+      const version = true ? "0.3.261127.1417" : "?";
       push({ t: Date.now(), k: "init", msg: `recorder ${version} @ ${location.host}` });
       window.addEventListener("error", (event) => {
         recordError("error", `${event.message} @${event.filename}:${event.lineno}`);
@@ -10163,7 +10167,7 @@
     const start = async () => {
       try {
         if (typeof console !== "undefined" && console.info) {
-          console.info(`[Stalker Assistant] v${"0.3.261127.1404"} started`);
+          console.info(`[Stalker Assistant] v${"0.3.261127.1417"} started`);
         }
         runtime.panel = new Panel({
           onToggleRecording: () => {
