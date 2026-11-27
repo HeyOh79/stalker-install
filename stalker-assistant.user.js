@@ -1,7 +1,7 @@
 /* ==UserScript==
 // @name         Stalker Assistant
 // @namespace    local.stalker-assistant
-// @version      0.3.261127.1235
+// @version      0.3.261127.1404
 // @description  Сбор событий, клавиатур и решений в игре «Сталкер» (VK)
 // @match        https://vk.com/*
 // @match        https://vk.ru/*
@@ -4479,6 +4479,8 @@
   var KEYBOARD_EXPAND_MIN_INTERVAL_MS = 3e4;
   var KEYBOARD_RELOAD_MIN_INTERVAL_MS = 15e3;
   var KEYBOARD_GONE_GRACE_MS = 15e3;
+  var STALE_BUTTON_COOLDOWN_MS = 45e3;
+  var DB_RESET_MIN_INTERVAL_MS = 3e4;
   var GARDEN_SELL_RETRY_MS = 6e4;
   var GARDEN_SELL_MAX_FAILS = 3;
   var FORK_RULE_REFRESH_MS = 3e4;
@@ -4749,6 +4751,8 @@
     noResponseStreak = 0;
     /** Сырые события падают подряд (сырой стор умер — диагностика слепа). */
     rawFailStreak = 0;
+    /** Последний форс-ресет соединения базы (анти-спам, см. putManyGuarded). */
+    lastDbResetAt = 0;
     /**
      * Из аномалии пора выходить (страж HP): флаг по чатам, живёт до «Вы вышли
      * из аномалии» / входа в новое поле. После подбора артефакта флаг больше
@@ -4767,6 +4771,13 @@
     cacheUntilByPeer = /* @__PURE__ */ new Map();
     /** Состояние боя по каждому чату (враг, HP, концентрация, урон навыков). */
     battleStates = /* @__PURE__ */ new Map();
+    /**
+     * Чёрный список кнопок (пира): игра ответила «кнопка с прошлого экрана» —
+     * в DOM старая инлайн-клавиатура ещё отрисована, и кликер находил мёртвую
+     * кнопку раз за разом (лог 27.11 13:52-13:55: «Запад» ×6 за 2,5 минуты).
+     * Кнопка блокируется до конца окна или смены клавиатуры.
+     */
+    staleButtonUntil = /* @__PURE__ */ new Map();
     /**
      * Наблюдаемый урон навыков прошлого боя (per peer): бой обнуляется на
      * смене экрана, а «если добиваю» (Жатва) слепа в первом ходе без этих
@@ -6625,7 +6636,7 @@
       } catch {
         return;
       }
-      const local = "0.3.261127.1235";
+      const local = "0.3.261127.1404";
       if (remote === null || !isNewerVersion(remote, local)) return;
       const firstNotice = this.state.updateAvailable?.remote !== remote;
       this.state.updateAvailable = { remote, local };
@@ -6887,7 +6898,10 @@
           if (known === void 0 || message.ts < known) this.keyboardFirstSeen.set(message.key, message.ts);
         }
         if (changedKeyboardKeys.size > 0) this.deadClicksSince = null;
-        if (changedKeyboardKeys.size > 0) this.lastComposerChangeAt = Date.now();
+        if (changedKeyboardKeys.size > 0) {
+          this.lastComposerChangeAt = Date.now();
+          this.staleButtonUntil.clear();
+        }
         const prevBotCmid = new Map(this.lastBotCmid);
         for (const message of effective) {
           if (message.out) continue;
@@ -7109,6 +7123,10 @@
             this.lastInlineKeyboard.delete(message.peerId);
             this.lastComposerKeyboard.delete(message.peerId);
             this.forgetBattleState(message.peerId);
+            if (this.lastAutoClickButton !== null && Date.now() - this.lastAutoClickSuccessAt < 15e3) {
+              this.staleButtonUntil.set(this.lastAutoClickButton, Date.now() + STALE_BUTTON_COOLDOWN_MS);
+              this.logAuto({ event: "stale-button", button: this.lastAutoClickButton, pauseMs: STALE_BUTTON_COOLDOWN_MS });
+            }
             if (this.lastAutoClickButton !== null && Date.now() - this.lastAutoClickSuccessAt < 15e3) {
               this.clickStreak = nextClickStreak(this.clickStreak, this.lastAutoClickButton);
               if (this.clickStreak.count >= AUTO_SAME_CLICK_LIMIT) {
@@ -7733,6 +7751,13 @@
       if (this.state.blindFishing && Date.now() < this.fishingUntil) return;
       const peerId = this.state.currentPeerId;
       if (peerId === null || !this.isGamePeer(peerId)) return;
+      if (Date.now() < (this.staleButtonUntil.get(planned.button) ?? 0)) {
+        this.logAuto({ event: "drop-plan", button: planned.button, reason: planned.reason, stillRelevant: false, retries: this.retryCount, cause: "stale-button" });
+        this.cancelAutoPlan();
+        this.evaluateAdvice();
+        this.panel?.update(this.state);
+        return;
+      }
       if (Date.now() < this.manualTakeoverUntil) {
         this.state.manualPaused = true;
         this.panel?.update(this.state);
@@ -8252,8 +8277,11 @@
         const timer = window.setTimeout(() => {
           if (settled) return;
           settled = true;
-          resetDbConnection();
-          reject(new Error("raw write timeout \u2014 \u0441\u043E\u0435\u0434\u0438\u043D\u0435\u043D\u0438\u0435 \u0431\u0430\u0437\u044B \u043F\u0435\u0440\u0435\u0441\u043E\u0437\u0434\u0430\u043D\u043E"));
+          if (Date.now() - this.lastDbResetAt > DB_RESET_MIN_INTERVAL_MS) {
+            this.lastDbResetAt = Date.now();
+            resetDbConnection();
+          }
+          reject(new Error("raw write timeout"));
         }, timeoutMs);
         put.then(
           () => {
@@ -8302,8 +8330,13 @@
             this.rawRecoveryInFlight = true;
             this.rawRecoveryStartedAt = Date.now();
             try {
-              await pruneStore("raw", this.rawQuotaKeep);
-              await putMany("raw", items);
+              await Promise.race([
+                pruneStore("raw", this.rawQuotaKeep),
+                new Promise((_, reject) => {
+                  window.setTimeout(() => reject(new Error("raw prune timeout")), 15e3);
+                })
+              ]);
+              await this.putManyGuarded("raw", items);
               this.rawQuotaKeep = RAW_KEEP_ON_QUOTA;
               this.rawFailStreak = 0;
             } catch (retryError) {
@@ -8905,7 +8938,7 @@
       };
       if (true) {
         const versionEl = shadow.querySelector(".version");
-        if (versionEl) versionEl.textContent = "0.3.261127.1235";
+        if (versionEl) versionEl.textContent = "0.3.261127.1404";
       }
       this.elements.toggle.addEventListener("click", () => actions.onToggleRecording());
       this.elements.updateReload.addEventListener("click", () => {
@@ -10077,7 +10110,7 @@
       }
     };
     try {
-      const version = true ? "0.3.261127.1235" : "?";
+      const version = true ? "0.3.261127.1404" : "?";
       push({ t: Date.now(), k: "init", msg: `recorder ${version} @ ${location.host}` });
       window.addEventListener("error", (event) => {
         recordError("error", `${event.message} @${event.filename}:${event.lineno}`);
@@ -10130,7 +10163,7 @@
     const start = async () => {
       try {
         if (typeof console !== "undefined" && console.info) {
-          console.info(`[Stalker Assistant] v${"0.3.261127.1235"} started`);
+          console.info(`[Stalker Assistant] v${"0.3.261127.1404"} started`);
         }
         runtime.panel = new Panel({
           onToggleRecording: () => {
