@@ -1,7 +1,7 @@
 /* ==UserScript==
 // @name         Stalker Assistant
 // @namespace    local.stalker-assistant
-// @version      0.3.261124.1210
+// @version      0.3.261127.1123
 // @description  Сбор событий, клавиатур и решений в игре «Сталкер» (VK)
 // @match        https://vk.com/*
 // @match        https://vk.ru/*
@@ -2647,14 +2647,18 @@
 
   // src/storage/db.ts
   var DB_NAME = "stalker-assistant";
-  var DB_VERSION = 3;
+  var DB_VERSION = 4;
   var dbPromise = null;
   function openDb() {
     return new Promise((resolve, reject) => {
       let settled = false;
       const request = indexedDB.open(DB_NAME, DB_VERSION);
-      request.onupgradeneeded = () => {
+      request.onupgradeneeded = (event) => {
         const db = request.result;
+        const oldVersion = event.oldVersion;
+        if (oldVersion > 0 && oldVersion < 4 && db.objectStoreNames.contains("raw")) {
+          db.deleteObjectStore("raw");
+        }
         const stores = [
           ["raw", "id"],
           ["messages", "key"],
@@ -4775,6 +4779,7 @@
     livenessTimer = null;
     pruneTimer = null;
     peerTrackingStarted = false;
+    freezeRecoveryInstalled = false;
     /** Последнее РЕАЛЬНОЕ (trusted) действие игрока на странице — см. noteUserActivity. */
     lastUserActivityAt = 0;
     lastOtherTabAutoAt = 0;
@@ -6154,6 +6159,7 @@
     startPeerTracking() {
       if (this.peerTrackingStarted) return;
       this.peerTrackingStarted = true;
+      this.installFreezeRecovery();
       const update = () => {
         const previousPeer = this.state.currentPeerId;
         this.state.currentPeerId = currentPeerFromLocation();
@@ -6606,7 +6612,7 @@
       } catch {
         return;
       }
-      const local = "0.3.261124.1210";
+      const local = "0.3.261127.1123";
       if (remote === null || !isNewerVersion(remote, local)) return;
       const firstNotice = this.state.updateAvailable?.remote !== remote;
       this.state.updateAvailable = { remote, local };
@@ -7935,6 +7941,55 @@
     noteAutoClickSent() {
       this.lastClickAwaitAt = Date.now();
     }
+    /**
+     * Заморозка вкладки (Chrome memory saver, ночной простой) может оставить
+     * очередь транзакций базы зависшей навсегда: записи висят без успеха и без
+     * ошибки, стор молчит днями при живых соседях (лог 23-27.11: raw замолчал
+     * на 4 дня, входящие тексты терялись первой доставкой — OUTы выживали:
+     * у них нет дедупа и они пишутся каждой доставкой). После разморозки
+     * проверяем базу пробной записью; не ответила за 5 с — пересоздаём
+     * соединение (зависшие транзакции падают, очередь чистая).
+     */
+    installFreezeRecovery() {
+      if (this.freezeRecoveryInstalled) return;
+      this.freezeRecoveryInstalled = true;
+      const probe = (reason) => {
+        window.setTimeout(() => {
+          let settled = false;
+          const timer = window.setTimeout(() => {
+            if (settled) return;
+            settled = true;
+            resetDbConnection();
+            this.reportError(new Error("\u0411\u0430\u0437\u0430 \u043D\u0435 \u043E\u0442\u0432\u0435\u0442\u0438\u043B\u0430 \u043F\u043E\u0441\u043B\u0435 \u0432\u043E\u0437\u043E\u0431\u043D\u043E\u0432\u043B\u0435\u043D\u0438\u044F \u0432\u043A\u043B\u0430\u0434\u043A\u0438 \u2014 \u0441\u043E\u0435\u0434\u0438\u043D\u0435\u043D\u0438\u0435 \u043F\u0435\u0440\u0435\u0441\u043E\u0437\u0434\u0430\u043D\u043E (" + reason + "). \u0415\u0441\u043B\u0438 \u0441\u043E\u043E\u0431\u0449\u0435\u043D\u0438\u0435 \u043F\u043E\u0432\u0442\u043E\u0440\u044F\u0435\u0442\u0441\u044F \u2014 \u043F\u0435\u0440\u0435\u0437\u0430\u0433\u0440\u0443\u0437\u0438 \u0441\u0442\u0440\u0430\u043D\u0438\u0446\u0443."), "\u0431\u0430\u0437\u0430");
+          }, 5e3);
+          putMany("raw", [{
+            id: `db-probe-${Date.now()}`,
+            ts: Date.now(),
+            source: "auto",
+            kind: "auto",
+            method: null,
+            url: null,
+            peerId: this.state.currentPeerId,
+            payload: { event: "db-resume-probe", reason }
+          }]).then(
+            () => {
+              if (settled) return;
+              settled = true;
+              window.clearTimeout(timer);
+            },
+            () => {
+              if (settled) return;
+              settled = true;
+              window.clearTimeout(timer);
+            }
+          );
+        }, 2e3);
+      };
+      document.addEventListener("resume", () => probe("resume"));
+      document.addEventListener("visibilitychange", () => {
+        if (document.visibilityState === "visible" && document.hasFocus()) probe("visible");
+      });
+    }
     /** Короткий снимок «почему авто молчит» — для события advice-expired. */
     autoSilenceReason() {
       if (this.state.mode !== "auto") return "mode:" + this.state.mode;
@@ -8820,7 +8875,7 @@
       };
       if (true) {
         const versionEl = shadow.querySelector(".version");
-        if (versionEl) versionEl.textContent = "0.3.261124.1210";
+        if (versionEl) versionEl.textContent = "0.3.261127.1123";
       }
       this.elements.toggle.addEventListener("click", () => actions.onToggleRecording());
       this.elements.updateReload.addEventListener("click", () => {
@@ -9992,7 +10047,7 @@
       }
     };
     try {
-      const version = true ? "0.3.261124.1210" : "?";
+      const version = true ? "0.3.261127.1123" : "?";
       push({ t: Date.now(), k: "init", msg: `recorder ${version} @ ${location.host}` });
       window.addEventListener("error", (event) => {
         recordError("error", `${event.message} @${event.filename}:${event.lineno}`);
@@ -10045,7 +10100,7 @@
     const start = async () => {
       try {
         if (typeof console !== "undefined" && console.info) {
-          console.info(`[Stalker Assistant] v${"0.3.261124.1210"} started`);
+          console.info(`[Stalker Assistant] v${"0.3.261127.1123"} started`);
         }
         runtime.panel = new Panel({
           onToggleRecording: () => {
