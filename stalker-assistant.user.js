@@ -1,7 +1,7 @@
 /* ==UserScript==
 // @name         Stalker Assistant
 // @namespace    local.stalker-assistant
-// @version      0.3.261127.1417
+// @version      0.3.261127.1432
 // @description  Сбор событий, клавиатур и решений в игре «Сталкер» (VK)
 // @match        https://vk.com/*
 // @match        https://vk.ru/*
@@ -1342,7 +1342,7 @@
     if (parsed.personal !== null || parsed.bonus !== null) return parsed;
     return fallback ?? null;
   }
-  function anomalyAdvice(keyboard, text, ts, state, events, exitWish, typeRules, limits, bolts) {
+  function anomalyAdvice(keyboard, text, ts, state, events, exitWish, noSignalExit, typeRules, limits, bolts) {
     const buttons = flattenButtons(keyboard);
     const byText = (needle) => buttons.find((button) => comparableText(button).includes(needle)) ?? null;
     const leave = byText("\u043F\u043E\u043A\u0438\u043D\u0443\u0442\u044C");
@@ -1410,13 +1410,14 @@
         ts
       };
     }
-    if (inField && (state?.fieldEmpty === true || state?.signal === 0)) {
+    const noSignalRule = noSignalExit && state?.silence === true;
+    if (inField && (state?.fieldEmpty === true || state?.signal === 0 || noSignalRule)) {
       const exitButton = byText("\u0432\u044B\u0439\u0442\u0438 \u0438\u0437 \u0430\u043D\u043E\u043C\u0430\u043B\u0438\u0438");
       if (exitButton !== null) {
         return {
           kind: "anomaly",
           title: `\u041D\u0430\u0436\u043C\u0438 \xAB${exitButton.text.trim()}\xBB`,
-          note: "\u0421\u0438\u0433\u043D\u0430\u043B \u043F\u043E\u0433\u0430\u0441 \u2014 \u0430\u0440\u0442\u0435\u0444\u0430\u043A\u0442\u043E\u0432 \u0432 \u043F\u043E\u043B\u0435 \u0431\u043E\u043B\u044C\u0448\u0435 \u043D\u0435\u0442, \u0432\u044B\u0445\u043E\u0434\u0438\u043C.",
+          note: noSignalRule ? "\u0422\u0438\u0448\u0438\u043D\u0430 \u0434\u0435\u0442\u0435\u043A\u0442\u043E\u0440\u0430 (\u043F\u0440\u0430\u0432\u0438\u043B\u043E \xAB\u0431\u0435\u0437 \u0441\u0438\u0433\u043D\u0430\u043B\u0430 \u2014 \u0441\u0440\u0430\u0437\u0443 \u0432\u044B\u0445\u043E\u0434\u0438\u0442\u044C\xBB): \u0430\u0440\u0442\u0435\u0444\u0430\u043A\u0442 \u0432\u043D\u0435 \u0437\u043E\u043D\u044B, \u0432\u044B\u0445\u043E\u0434\u0438\u043C." : "\u0421\u0438\u0433\u043D\u0430\u043B \u043F\u043E\u0433\u0430\u0441 \u2014 \u0430\u0440\u0442\u0435\u0444\u0430\u043A\u0442\u043E\u0432 \u0432 \u043F\u043E\u043B\u0435 \u0431\u043E\u043B\u044C\u0448\u0435 \u043D\u0435\u0442, \u0432\u044B\u0445\u043E\u0434\u0438\u043C.",
           button: exitButton,
           ts
         };
@@ -1952,6 +1953,7 @@
         input.anomaly ?? null,
         options?.events,
         options?.anomalyExit === true,
+        options?.anomalyNoSignalExit === true,
         options?.anomalyTypeRules ?? null,
         screenEntryLimits(text, options?.anomalyLimits),
         options?.anomalyBolts ?? null
@@ -4558,6 +4560,7 @@
       blindFishing: false,
       anomalyEntryPaused: false,
       anomalyBolts: null,
+      anomalyNoSignalExit: false,
       invasionEnabled: false,
       bossFarmEnabled: false,
       bossFarmPhase: "idle",
@@ -4952,6 +4955,7 @@
       }
       this.state.gardenAutoSell = sanitizeBoolean(await getMeta("gardenAutoSell", false), false);
       this.state.anomalyHpGuard = sanitizeBoolean(await getMeta("anomalyHpGuard", false), false);
+      this.state.anomalyNoSignalExit = sanitizeBoolean(await getMeta("anomalyNoSignalExit", false), false);
       this.state.restGuard = sanitizeBoolean(await getMeta("restHpGuard", false), false);
       const storedRestPercent = await getMeta("restHpPercent", 60);
       this.state.restHpPercent = typeof storedRestPercent === "number" && Number.isFinite(storedRestPercent) ? Math.max(5, Math.min(95, Math.round(storedRestPercent))) : 60;
@@ -5773,6 +5777,13 @@
       this.logAuto({ event: "map-cancel", target });
       this.evaluateAdvice();
       if (this.state.mode === "auto") this.scheduleAuto();
+      this.panel?.update(this.state);
+    }
+    /** Тумблер «Без сигнала — сразу выходить»: тишина детектора покидает поле. */
+    async setAnomalyNoSignalExit(value) {
+      this.state.anomalyNoSignalExit = value;
+      this.evaluateAdvice();
+      await setMeta("anomalyNoSignalExit", value);
       this.panel?.update(this.state);
     }
     async setAnomalyHpGuard(value) {
@@ -6637,7 +6648,7 @@
       } catch {
         return;
       }
-      const local = "0.3.261127.1417";
+      const local = "0.3.261127.1432";
       if (remote === null || !isNewerVersion(remote, local)) return;
       const firstNotice = this.state.updateAvailable?.remote !== remote;
       this.state.updateAvailable = { remote, local };
@@ -8801,6 +8812,9 @@
         <div class="events-list"></div>
         <div class="section-title">\u0410\u043D\u043E\u043C\u0430\u043B\u0438\u0438</div>
         <div class="hint" style="margin-top:0">\u041A\u0430\u043A\u0438\u0435 \u043F\u043E\u043B\u044F \u043F\u043E\u0441\u0435\u0449\u0430\u0442\u044C. \xAB\u041E\u0431\u0449\u0435\u0435\xBB \u2014 \u043F\u043E \u043F\u0440\u0430\u0432\u0438\u043B\u0443 \u0441\u043E\u0431\u044B\u0442\u0438\u044F \xAB\u0410\u043D\u043E\u043C\u0430\u043B\u0438\u044F\xBB \u0432\u044B\u0448\u0435. \u041F\u043E\u043B\u0435 \u0441 \xAB\u0414\u043E\u043F. \u043B\u0438\u043C\u0438\u0442 (0)\xBB \u043E\u0431\u0445\u043E\u0434\u0438\u0442\u0441\u044F \u043D\u0435\u0437\u0430\u0432\u0438\u0441\u0438\u043C\u043E \u043E\u0442 \u0441\u043F\u0438\u0441\u043A\u0430.</div>
+        <div class="rot-cond" style="margin-left:0;margin-top:4px" title="\xAB\u0421\u0438\u0433\u043D\u0430\u043B: \u0442\u0438\u0448\u0438\u043D\u0430 \u2014 \u0430\u0440\u0442\u0435\u0444\u0430\u043A\u0442 \u0434\u0430\u043B\u044C\u0448\u0435, \u0447\u0435\u043C \u0431\u0435\u0440\u0451\u0442 \u0434\u0435\u0442\u0435\u043A\u0442\u043E\u0440\xBB: \u043F\u043E\u043A\u0438\u0434\u0430\u0442\u044C \u0442\u0430\u043A\u043E\u0435 \u043F\u043E\u043B\u0435 \u0441\u0440\u0430\u0437\u0443, \u043D\u0435 \u0431\u043B\u0443\u0436\u0434\u0430\u0442\u044C \u0432 \u043F\u043E\u0438\u0441\u043A\u0430\u0445 \u0441\u0438\u0433\u043D\u0430\u043B\u0430. \u0412\u044B\u043A\u043B\u044E\u0447\u0435\u043D\u043E \u2014 \u043D\u0430\u0432\u0438\u0433\u0430\u0442\u043E\u0440 \u0438\u0449\u0435\u0442 \u043F\u043E\u043A\u0440\u044B\u0442\u0438\u0435 \u043A\u043B\u0435\u0442\u043E\u043A (\u0432 \xAB\u0433\u043B\u0443\u0445\u0438\u0445\xBB \u043F\u043E\u043B\u044F\u0445 \u044D\u0442\u043E \u0440\u0430\u0431\u043E\u0447\u0438\u0439 \u0441\u043F\u043E\u0441\u043E\u0431).">
+          <label><input type="checkbox" class="anomaly-nosignal"> \u0411\u0435\u0437 \u0441\u0438\u0433\u043D\u0430\u043B\u0430 \u2014 \u0441\u0440\u0430\u0437\u0443 \u0432\u044B\u0445\u043E\u0434\u0438\u0442\u044C</label>
+        </div>
         <div class="anomaly-types-list"></div>
         <div class="section-title">\u0417\u0434\u043E\u0440\u043E\u0432\u044C\u0435</div>
         <div class="hint" style="margin-top:0">\u0410\u0432\u0442\u043E-\u043E\u0442\u0434\u044B\u0445 \u0443 \u043A\u043E\u0441\u0442\u0440\u0430 \u043B\u043E\u043A\u0430\u0446\u0438\u0438: \u041A\u043E\u0441\u0442\u0451\u0440 \u2192 \u2795 \u041E\u0442\u0434\u043E\u0445\u043D\u0443\u0442\u044C (\u0434\u043E \u043F\u043E\u043B\u043D\u043E\u0433\u043E \u0437\u0434\u043E\u0440\u043E\u0432\u044C\u044F) \u2192 \u2B05 \u0417\u043E\u043D\u0430. \u041D\u0435 \u0440\u0430\u0431\u043E\u0442\u0430\u0435\u0442 \u0432\u043D\u0443\u0442\u0440\u0438 \u0430\u043D\u043E\u043C\u0430\u043B\u0438\u0438 \u2014 \u0442\u0430\u043C \xAB\u0421\u0442\u0440\u0430\u0436 HP\xBB.</div>
@@ -8936,13 +8950,14 @@
         rulesClose: get(".view-rules .modal-close"),
         eventsList: get(".events-list"),
         anomalyTypesList: get(".anomaly-types-list"),
+        anomalyNoSignal: get(".anomaly-nosignal"),
         restGuard: get(".rest-guard"),
         restHp: get(".rest-hp"),
         rulesList: get(".rules-list")
       };
       if (true) {
         const versionEl = shadow.querySelector(".version");
-        if (versionEl) versionEl.textContent = "0.3.261127.1417";
+        if (versionEl) versionEl.textContent = "0.3.261127.1432";
       }
       this.elements.toggle.addEventListener("click", () => actions.onToggleRecording());
       this.elements.updateReload.addEventListener("click", () => {
@@ -8984,6 +8999,9 @@
       });
       this.elements.hpGuard.addEventListener("click", () => {
         this.actions.onToggleAnomalyHpGuard(this.elements.hpGuard.textContent !== "\u0432\u043A\u043B");
+      });
+      this.elements.anomalyNoSignal.addEventListener("change", () => {
+        this.actions.onToggleAnomalyNoSignalExit(this.elements.anomalyNoSignal.checked);
       });
       this.elements.restGuard.addEventListener("change", () => {
         this.actions.onRestGuardChange(this.elements.restGuard.checked, Number(this.elements.restHp.value) || 60);
@@ -9136,6 +9154,9 @@
       this.elements.invasion.title = phaseText === "" ? "\u0412\u043A\u043B\u044E\u0447\u0438 \u2014 \u0431\u043E\u0442 \u0441\u0440\u0430\u0437\u0443 \u0432\u0435\u0434\u0451\u0442 \u043D\u0430\u0448\u0435\u0441\u0442\u0432\u0438\u0435 \u043F\u043E \u0442\u0440\u0451\u043C \u043B\u043E\u043A\u0430\u0446\u0438\u044F\u043C." : "\u041D\u0430\u0448\u0435\u0441\u0442\u0432\u0438\u0435: " + phaseText + " \u2014 " + stageName + ".";
       this.elements.hpGuard.textContent = state.anomalyHpGuard ? "\u0432\u043A\u043B" : "\u0432\u044B\u043A\u043B";
       this.elements.hpGuard.classList.toggle("off", !state.anomalyHpGuard);
+      if (this.elements.anomalyNoSignal.checked !== state.anomalyNoSignalExit) {
+        this.elements.anomalyNoSignal.checked = state.anomalyNoSignalExit;
+      }
       if (this.elements.restGuard.checked !== state.restGuard) this.elements.restGuard.checked = state.restGuard;
       const restHpValue = String(state.restHpPercent);
       if (document.activeElement !== this.elements.restHp && this.elements.restHp.value !== restHpValue) {
@@ -10114,7 +10135,7 @@
       }
     };
     try {
-      const version = true ? "0.3.261127.1417" : "?";
+      const version = true ? "0.3.261127.1432" : "?";
       push({ t: Date.now(), k: "init", msg: `recorder ${version} @ ${location.host}` });
       window.addEventListener("error", (event) => {
         recordError("error", `${event.message} @${event.filename}:${event.lineno}`);
@@ -10167,7 +10188,7 @@
     const start = async () => {
       try {
         if (typeof console !== "undefined" && console.info) {
-          console.info(`[Stalker Assistant] v${"0.3.261127.1417"} started`);
+          console.info(`[Stalker Assistant] v${"0.3.261127.1432"} started`);
         }
         runtime.panel = new Panel({
           onToggleRecording: () => {
@@ -10205,6 +10226,9 @@
           },
           onToggleAnomalyHpGuard: (enabled) => {
             void runtime.setAnomalyHpGuard(enabled);
+          },
+          onToggleAnomalyNoSignalExit: (enabled) => {
+            void runtime.setAnomalyNoSignalExit(enabled);
           },
           onRestGuardChange: (enabled, percent) => {
             void runtime.setRestGuard(enabled, percent);
