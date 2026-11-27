@@ -1,7 +1,7 @@
 /* ==UserScript==
 // @name         Stalker Assistant
 // @namespace    local.stalker-assistant
-// @version      0.3.261127.1123
+// @version      0.3.261127.1235
 // @description  Сбор событий, клавиатур и решений в игре «Сталкер» (VK)
 // @match        https://vk.com/*
 // @match        https://vk.ru/*
@@ -1234,6 +1234,10 @@
   function skillOnCooldown(state, button) {
     const key = usedButtonKey(button);
     return key !== "" && (state?.skillCooldown[key] ?? 0) > 0;
+  }
+  function inheritSkillDamage(memory, fresh) {
+    if (memory === void 0 || Object.keys(memory).length === 0) return fresh;
+    return { ...fresh, skillDamage: { ...memory, ...fresh.skillDamage } };
   }
   function pickHumanEligible(eligible, mistakeRatePct, rand = Math.random) {
     const first = eligible[0] ?? null;
@@ -4474,6 +4478,7 @@
   var SELF_POLL_COUNT = 12;
   var KEYBOARD_EXPAND_MIN_INTERVAL_MS = 3e4;
   var KEYBOARD_RELOAD_MIN_INTERVAL_MS = 15e3;
+  var KEYBOARD_GONE_GRACE_MS = 15e3;
   var GARDEN_SELL_RETRY_MS = 6e4;
   var GARDEN_SELL_MAX_FAILS = 3;
   var FORK_RULE_REFRESH_MS = 3e4;
@@ -4762,6 +4767,12 @@
     cacheUntilByPeer = /* @__PURE__ */ new Map();
     /** Состояние боя по каждому чату (враг, HP, концентрация, урон навыков). */
     battleStates = /* @__PURE__ */ new Map();
+    /**
+     * Наблюдаемый урон навыков прошлого боя (per peer): бой обнуляется на
+     * смене экрана, а «если добиваю» (Жатва) слепа в первом ходе без этих
+     * данных — новый бой наследует урон, прогноз работает сразу.
+     */
+    skillDamageMemoryByPeer = /* @__PURE__ */ new Map();
     /** Заполненность садка по каждому чату («🗑 Садок: N/M» из сообщений улова). */
     gardenSlotsByPeer = /* @__PURE__ */ new Map();
     /** Когда отправляли «Продать всю рыбу» в последний раз (защита от шторма). */
@@ -6492,6 +6503,8 @@
           return;
         }
       }
+      const firstSeenAt = keyboardMessage !== null ? this.keyboardFirstSeen.get(keyboardMessage.key) ?? 0 : 0;
+      if (firstSeenAt > 0 && Date.now() - firstSeenAt < KEYBOARD_GONE_GRACE_MS) return;
       if (keyboard.inline) this.lastInlineKeyboard.delete(peerId);
       else this.lastComposerKeyboard.delete(peerId);
       this.battleLivenessMisses.delete(peerId);
@@ -6612,7 +6625,7 @@
       } catch {
         return;
       }
-      const local = "0.3.261127.1123";
+      const local = "0.3.261127.1235";
       if (remote === null || !isNewerVersion(remote, local)) return;
       const firstNotice = this.state.updateAvailable?.remote !== remote;
       this.state.updateAvailable = { remote, local };
@@ -7074,7 +7087,12 @@
             this.cacheUntilByPeer.set(message.peerId, message.ts + cacheSearchMs(message.text));
           }
           if (fresh && message.text && isBattleFlowText(message.text)) {
-            this.battleStates.set(message.peerId, updateBattleState(this.battleStates.get(message.peerId) ?? null, message.text, message.conversationMessageId));
+            const prevBattle = this.battleStates.get(message.peerId) ?? null;
+            let nextBattle = updateBattleState(prevBattle, message.text, message.conversationMessageId);
+            if (prevBattle === null) {
+              nextBattle = inheritSkillDamage(this.skillDamageMemoryByPeer.get(message.peerId), nextBattle);
+            }
+            this.battleStates.set(message.peerId, nextBattle);
             this.fishingUntil = 0;
             if (this.state.blindFishing) {
               this.state.blindFishing = false;
@@ -7090,7 +7108,7 @@
           if (fresh && message.text && isStaleKeyboardText(message.text)) {
             this.lastInlineKeyboard.delete(message.peerId);
             this.lastComposerKeyboard.delete(message.peerId);
-            this.battleStates.delete(message.peerId);
+            this.forgetBattleState(message.peerId);
             if (this.lastAutoClickButton !== null && Date.now() - this.lastAutoClickSuccessAt < 15e3) {
               this.clickStreak = nextClickStreak(this.clickStreak, this.lastAutoClickButton);
               if (this.clickStreak.count >= AUTO_SAME_CLICK_LIMIT) {
@@ -7134,7 +7152,7 @@
             const composerBattle = composer?.keyboard != null && isBattleKeyboard(composer.keyboard);
             if (inlineBattle) this.lastInlineKeyboard.delete(message.peerId);
             if (composerBattle) this.lastComposerKeyboard.delete(message.peerId);
-            this.battleStates.delete(message.peerId);
+            this.forgetBattleState(message.peerId);
             this.recoveryByPeer.set(message.peerId, Date.now());
             this.logAuto({ event: "knockout" });
           }
@@ -7146,7 +7164,7 @@
             if (inlineBattle) this.lastInlineKeyboard.delete(message.peerId);
             if (composerBattle) this.lastComposerKeyboard.delete(message.peerId);
             if (inlineBattle || composerBattle || this.battleStates.has(message.peerId)) {
-              this.battleStates.delete(message.peerId);
+              this.forgetBattleState(message.peerId);
             }
             if (inlineBattle || composerBattle) {
               this.logAuto({ event: "battle-over", scene: trimLoadingPrefix(message.text).slice(0, 60) });
@@ -7989,6 +8007,18 @@
       document.addEventListener("visibilitychange", () => {
         if (document.visibilityState === "visible" && document.hasFocus()) probe("visible");
       });
+    }
+    /**
+     * Сброс состояния боя (смена экрана/нокаут/протухшая клавиатура) с
+     * сохранением наблюдаемого урона навыков в память пира: следующий бой
+     * наследует её, и прогноз «если добиваю» работает с первого хода.
+     */
+    forgetBattleState(peerId) {
+      const battle = this.battleStates.get(peerId);
+      if (battle && Object.keys(battle.skillDamage).length > 0) {
+        this.skillDamageMemoryByPeer.set(peerId, battle.skillDamage);
+      }
+      this.battleStates.delete(peerId);
     }
     /** Короткий снимок «почему авто молчит» — для события advice-expired. */
     autoSilenceReason() {
@@ -8875,7 +8905,7 @@
       };
       if (true) {
         const versionEl = shadow.querySelector(".version");
-        if (versionEl) versionEl.textContent = "0.3.261127.1123";
+        if (versionEl) versionEl.textContent = "0.3.261127.1235";
       }
       this.elements.toggle.addEventListener("click", () => actions.onToggleRecording());
       this.elements.updateReload.addEventListener("click", () => {
@@ -10047,7 +10077,7 @@
       }
     };
     try {
-      const version = true ? "0.3.261127.1123" : "?";
+      const version = true ? "0.3.261127.1235" : "?";
       push({ t: Date.now(), k: "init", msg: `recorder ${version} @ ${location.host}` });
       window.addEventListener("error", (event) => {
         recordError("error", `${event.message} @${event.filename}:${event.lineno}`);
@@ -10100,7 +10130,7 @@
     const start = async () => {
       try {
         if (typeof console !== "undefined" && console.info) {
-          console.info(`[Stalker Assistant] v${"0.3.261127.1123"} started`);
+          console.info(`[Stalker Assistant] v${"0.3.261127.1235"} started`);
         }
         runtime.panel = new Panel({
           onToggleRecording: () => {
