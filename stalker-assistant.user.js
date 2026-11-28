@@ -1,7 +1,7 @@
 /* ==UserScript==
 // @name         Stalker Assistant
 // @namespace    local.stalker-assistant
-// @version      0.3.261127.1432
+// @version      0.3.261128.1216
 // @description  Сбор событий, клавиатур и решений в игре «Сталкер» (VK)
 // @match        https://vk.com/*
 // @match        https://vk.ru/*
@@ -6648,7 +6648,7 @@
       } catch {
         return;
       }
-      const local = "0.3.261127.1432";
+      const local = "0.3.261128.1216";
       if (remote === null || !isNewerVersion(remote, local)) return;
       const firstNotice = this.state.updateAvailable?.remote !== remote;
       this.state.updateAvailable = { remote, local };
@@ -7332,6 +7332,7 @@
         helicopter: Date.now() < (this.helicopterUntilByPeer.get(peerId) ?? 0),
         caches: Date.now() < (this.cacheUntilByPeer.get(peerId) ?? 0),
         anomalyExit: this.anomalyExitByPeer.has(peerId),
+        anomalyNoSignalExit: this.state.anomalyNoSignalExit,
         anomalyTypeRules: this.state.anomalyTypeRules.rules,
         anomalyLimits: this.anomalyLimitsByPeer.get(peerId) ?? null,
         invasion: { active: this.invasionEnabled && (this.invasionState.phase === "travel" || this.invasionState.phase === "fight") },
@@ -8957,7 +8958,7 @@
       };
       if (true) {
         const versionEl = shadow.querySelector(".version");
-        if (versionEl) versionEl.textContent = "0.3.261127.1432";
+        if (versionEl) versionEl.textContent = "0.3.261128.1216";
       }
       this.elements.toggle.addEventListener("click", () => actions.onToggleRecording());
       this.elements.updateReload.addEventListener("click", () => {
@@ -10135,7 +10136,7 @@
       }
     };
     try {
-      const version = true ? "0.3.261127.1432" : "?";
+      const version = true ? "0.3.261128.1216" : "?";
       push({ t: Date.now(), k: "init", msg: `recorder ${version} @ ${location.host}` });
       window.addEventListener("error", (event) => {
         recordError("error", `${event.message} @${event.filename}:${event.lineno}`);
@@ -10188,7 +10189,7 @@
     const start = async () => {
       try {
         if (typeof console !== "undefined" && console.info) {
-          console.info(`[Stalker Assistant] v${"0.3.261127.1432"} started`);
+          console.info(`[Stalker Assistant] v${"0.3.261128.1216"} started`);
         }
         runtime.panel = new Panel({
           onToggleRecording: () => {
