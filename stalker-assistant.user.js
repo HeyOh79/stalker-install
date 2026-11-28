@@ -1,7 +1,7 @@
 /* ==UserScript==
 // @name         Stalker Assistant
 // @namespace    local.stalker-assistant
-// @version      0.3.261128.1216
+// @version      0.3.261128.1320
 // @description  Сбор событий, клавиатур и решений в игре «Сталкер» (VK)
 // @match        https://vk.com/*
 // @match        https://vk.ru/*
@@ -4336,11 +4336,20 @@
     };
   }
   function panicRateVerdict(now, sentAt, settings) {
-    if (!settings.enabled) return { stop: false, count: 0 };
+    if (!settings.enabled) return { stop: false, count: 0, burst: 0 };
     const minuteAgo = now - 60 * 1e3;
-    const count = sentAt.filter((ts) => ts > minuteAgo).length;
-    return { stop: count > settings.panicPerMin, count };
+    const recent = sentAt.filter((ts) => ts > minuteAgo).slice().sort((a, b) => a - b);
+    const count = recent.length;
+    let burst = 0;
+    for (let i = 0; i < recent.length; i += 1) {
+      let inWindow = 0;
+      for (let j = i; j < recent.length && (recent[j] ?? 0) - (recent[i] ?? 0) <= 5e3; j += 1) inWindow += 1;
+      if (inWindow > burst) burst = inWindow;
+    }
+    const stop = count > settings.panicPerMin && burst >= PANIC_BURST_IN_WINDOW;
+    return { stop, count, burst };
   }
+  var PANIC_BURST_IN_WINDOW = 4;
 
   // src/core/garden.ts
   var GARDEN_SELL_COMMAND = "\u041F\u0440\u043E\u0434\u0430\u0442\u044C \u0432\u0441\u044E \u0440\u044B\u0431\u0443";
@@ -5524,8 +5533,10 @@
         await setMeta("autoLock", { id: this.autoLockTabId, ts: now });
         this.humanizeActiveSince = this.humanizeActiveSince || now;
         return true;
-      } catch {
-        return true;
+      } catch (error) {
+        void this.reportError(error instanceof Error ? error : new Error(String(error)), "\u043B\u043E\u043A \xAB\u0410\u0432\u0442\u043E\xBB");
+        this.reportError(new Error("\u0411\u0430\u0437\u0430 \u043D\u0435\u0434\u043E\u0441\u0442\u0443\u043F\u043D\u0430 (\u0432\u0435\u0440\u043E\u044F\u0442\u043D\u043E, \u044D\u0442\u043E \u0432\u043A\u043B\u0430\u0434\u043A\u0430 \u0441\u043E \u0421\u0422\u0410\u0420\u041E\u0419 \u0432\u0435\u0440\u0441\u0438\u0435\u0439 \u0441\u043A\u0440\u0438\u043F\u0442\u0430 \u2014 \u0431\u0430\u0437\u0430 \u0443\u0436\u0435 \u043E\u0431\u043D\u043E\u0432\u043B\u0435\u043D\u0430). \u041F\u0435\u0440\u0435\u0437\u0430\u0433\u0440\u0443\u0437\u0438 \u0438\u043B\u0438 \u0437\u0430\u043A\u0440\u043E\u0439 \u044D\u0442\u0443 \u0432\u043A\u043B\u0430\u0434\u043A\u0443: \u0431\u0435\u0437 \u0431\u0430\u0437\u044B \xAB\u0410\u0432\u0442\u043E\xBB \u0437\u0434\u0435\u0441\u044C \u043E\u0442\u043A\u043B\u044E\u0447\u0435\u043D\u043E, \u0438\u043D\u0430\u0447\u0435 \u043A\u043D\u043E\u043F\u043A\u0438 \u0436\u043C\u0443\u0442 \u0434\u0432\u0435 \u0432\u043A\u043B\u0430\u0434\u043A\u0438 \u043E\u0434\u043D\u043E\u0432\u0440\u0435\u043C\u0435\u043D\u043D\u043E."), "\u0440\u0435\u0436\u0438\u043C");
+        return false;
       }
     }
     async heartbeatAutoLock() {
@@ -6648,7 +6659,7 @@
       } catch {
         return;
       }
-      const local = "0.3.261128.1216";
+      const local = "0.3.261128.1320";
       if (remote === null || !isNewerVersion(remote, local)) return;
       const firstNotice = this.state.updateAvailable?.remote !== remote;
       this.state.updateAvailable = { remote, local };
@@ -8958,7 +8969,7 @@
       };
       if (true) {
         const versionEl = shadow.querySelector(".version");
-        if (versionEl) versionEl.textContent = "0.3.261128.1216";
+        if (versionEl) versionEl.textContent = "0.3.261128.1320";
       }
       this.elements.toggle.addEventListener("click", () => actions.onToggleRecording());
       this.elements.updateReload.addEventListener("click", () => {
@@ -10136,7 +10147,7 @@
       }
     };
     try {
-      const version = true ? "0.3.261128.1216" : "?";
+      const version = true ? "0.3.261128.1320" : "?";
       push({ t: Date.now(), k: "init", msg: `recorder ${version} @ ${location.host}` });
       window.addEventListener("error", (event) => {
         recordError("error", `${event.message} @${event.filename}:${event.lineno}`);
@@ -10189,7 +10200,7 @@
     const start = async () => {
       try {
         if (typeof console !== "undefined" && console.info) {
-          console.info(`[Stalker Assistant] v${"0.3.261128.1216"} started`);
+          console.info(`[Stalker Assistant] v${"0.3.261128.1320"} started`);
         }
         runtime.panel = new Panel({
           onToggleRecording: () => {
